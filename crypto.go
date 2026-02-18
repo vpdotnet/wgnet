@@ -1,5 +1,5 @@
 // Copyright (c) VP.NET LLC. All rights reserved.
-// Licensed under the BSD 3-Clause License.
+// Licensed under the MIT License.
 // See LICENSE file in the project root for full license information.
 
 package wgnet
