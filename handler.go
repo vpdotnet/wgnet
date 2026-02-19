@@ -370,6 +370,14 @@ func (h *Handler) isUnderLoad() bool {
 	return h.underLoad
 }
 
+// hasKeypairIndex reports whether this handler owns a keypair with the given local index.
+func (h *Handler) hasKeypairIndex(idx uint32) bool {
+	h.keypairsMutex.RLock()
+	_, exists := h.keypairs[idx]
+	h.keypairsMutex.RUnlock()
+	return exists
+}
+
 // cryptoRandRead is a wrapper for testing.
 var cryptoRandRead = func(b []byte) (int, error) {
 	return rand.Read(b)
