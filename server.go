@@ -6,6 +6,7 @@ package wgnet
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -203,6 +204,9 @@ func (s *Server) processIncoming(data []byte, addr net.Addr) {
 		if e != nil {
 			return
 		}
+		if mr == nil {
+			return
+		}
 		result = mr.PacketResult
 		handler = mr.Handler
 	} else {
@@ -211,6 +215,10 @@ func (s *Server) processIncoming(data []byte, addr net.Addr) {
 			return
 		}
 		handler = s.handler
+	}
+
+	if result == nil {
+		return
 	}
 
 	// Update peer address (skip when PeerKey is zero, e.g. cookie replies).
@@ -258,6 +266,43 @@ func (s *Server) maintenanceLoop() {
 			}
 		}
 	}
+}
+
+// Connect initiates a handshake to a peer at the given address.
+// In single-handler mode, uses the handler. In multi-handler mode, returns an error
+// (use ConnectWith to specify the handler).
+func (s *Server) Connect(peerKey NoisePublicKey, addr *net.UDPAddr) error {
+	if s.multiHandler != nil {
+		return errors.New("wgnet: use ConnectWith in multi-handler mode")
+	}
+	return s.connectWith(peerKey, addr, s.handler)
+}
+
+// ConnectWith initiates a handshake to a peer using the specified handler.
+func (s *Server) ConnectWith(peerKey NoisePublicKey, addr *net.UDPAddr, handler *Handler) error {
+	return s.connectWith(peerKey, addr, handler)
+}
+
+func (s *Server) connectWith(peerKey NoisePublicKey, addr *net.UDPAddr, handler *Handler) error {
+	initPkt, err := handler.InitiateHandshake(peerKey)
+	if err != nil {
+		return fmt.Errorf("wgnet: initiate handshake: %w", err)
+	}
+
+	// Pre-register peer address so the response can be correlated
+	addrCopy := *addr
+	s.addrsMu.Lock()
+	s.peerAddrs[peerKey] = &addrCopy
+	s.addrsMu.Unlock()
+
+	if s.peerHandlers != nil {
+		s.handlersMu.Lock()
+		s.peerHandlers[peerKey] = handler
+		s.handlersMu.Unlock()
+	}
+
+	_, err = s.conn.WriteTo(initPkt, addr)
+	return err
 }
 
 func (s *Server) sendWith(data []byte, peerKey NoisePublicKey, handler *Handler) error {

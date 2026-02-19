@@ -95,11 +95,12 @@ type Handler struct {
 // PeerInfo contains information about an authorized peer.
 type PeerInfo struct {
 	PublicKey     NoisePublicKey
-	PresharedKey NoisePresharedKey
-	HasPSK       bool
+	PresharedKey  NoisePresharedKey
+	HasPSK        bool
 	CreatedAt     time.Time
 	ExpiresAt     time.Time
 	LastHandshake time.Time
+	cookieGen     CookieGenerator
 }
 
 // NewHandler creates a new WireGuard protocol handler.
@@ -151,10 +152,12 @@ func (h *Handler) AddPeer(peerKey NoisePublicKey) {
 		return
 	}
 
-	h.peers[peerKey] = &PeerInfo{
-		PublicKey:  peerKey,
-		CreatedAt:  now(),
+	peerInfo := &PeerInfo{
+		PublicKey: peerKey,
+		CreatedAt: now(),
 	}
+	peerInfo.cookieGen.Init(peerKey)
+	h.peers[peerKey] = peerInfo
 }
 
 // AddPeerWithPSK authorizes a peer with a preshared key.
@@ -162,12 +165,14 @@ func (h *Handler) AddPeerWithPSK(peerKey NoisePublicKey, psk NoisePresharedKey) 
 	h.peersMutex.Lock()
 	defer h.peersMutex.Unlock()
 
-	h.peers[peerKey] = &PeerInfo{
-		PublicKey:     peerKey,
-		PresharedKey:  psk,
-		HasPSK:        true,
-		CreatedAt:      now(),
+	peerInfo := &PeerInfo{
+		PublicKey:    peerKey,
+		PresharedKey: psk,
+		HasPSK:       true,
+		CreatedAt:    now(),
 	}
+	peerInfo.cookieGen.Init(peerKey)
+	h.peers[peerKey] = peerInfo
 }
 
 // RemovePeer removes a peer from the authorized list and tears down its session.
@@ -242,11 +247,12 @@ func (h *Handler) ProcessPacket(data []byte, remoteAddr *net.UDPAddr) (*PacketRe
 	switch msgType {
 	case MessageInitiationType:
 		return h.processHandshakeInitiation(data, remoteAddr)
+	case MessageResponseType:
+		return h.processHandshakeResponse(data)
+	case MessageCookieReplyType:
+		return h.processCookieReply(data)
 	case MessageTransportType:
 		return h.processDataPacket(data)
-	case MessageCookieReplyType:
-		// TODO: process cookie reply for client-side handshake initiation
-		return nil, fmt.Errorf("cookie reply processing not yet implemented")
 	default:
 		return nil, fmt.Errorf("unknown message type: %d", msgType)
 	}
@@ -368,6 +374,14 @@ func (h *Handler) isUnderLoad() bool {
 	h.loadMutex.RLock()
 	defer h.loadMutex.RUnlock()
 	return h.underLoad
+}
+
+// hasHandshakeIndex reports whether this handler has a pending handshake with the given local index.
+func (h *Handler) hasHandshakeIndex(idx uint32) bool {
+	h.handshakesMutex.RLock()
+	_, exists := h.handshakes[idx]
+	h.handshakesMutex.RUnlock()
+	return exists
 }
 
 // hasKeypairIndex reports whether this handler owns a keypair with the given local index.

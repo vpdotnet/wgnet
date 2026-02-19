@@ -384,6 +384,277 @@ func TestServerClose(t *testing.T) {
 	}
 }
 
+func TestInitiateHandshake(t *testing.T) {
+	// Create a client handler and a server handler.
+	client, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler client: %v", err)
+	}
+	defer client.Close()
+
+	server, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler server: %v", err)
+	}
+	defer server.Close()
+
+	// Authorize each other.
+	client.AddPeer(server.PublicKey())
+	server.AddPeer(client.PublicKey())
+
+	// Build initiation from client to server.
+	pkt, err := client.InitiateHandshake(server.PublicKey())
+	if err != nil {
+		t.Fatalf("InitiateHandshake: %v", err)
+	}
+
+	// Verify packet size.
+	if len(pkt) != MessageInitiationSize {
+		t.Fatalf("packet size: got %d, want %d", len(pkt), MessageInitiationSize)
+	}
+
+	// Verify handshake state is stored.
+	client.handshakesMutex.RLock()
+	hsCount := len(client.handshakes)
+	client.handshakesMutex.RUnlock()
+	if hsCount != 1 {
+		t.Fatalf("pending handshakes: got %d, want 1", hsCount)
+	}
+
+	// Verify the server can process the initiation.
+	remoteAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
+	result, err := server.ProcessPacket(pkt, remoteAddr)
+	if err != nil {
+		t.Fatalf("server ProcessPacket: %v", err)
+	}
+	if result.Type != PacketHandshakeResponse {
+		t.Fatalf("expected handshake response, got %d", result.Type)
+	}
+	if result.PeerKey != client.PublicKey() {
+		t.Fatal("response PeerKey mismatch")
+	}
+}
+
+func TestClientHandshakeFlow(t *testing.T) {
+	// Create client and server handlers.
+	client, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler client: %v", err)
+	}
+	defer client.Close()
+
+	server, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler server: %v", err)
+	}
+	defer server.Close()
+
+	// Authorize each other.
+	client.AddPeer(server.PublicKey())
+	server.AddPeer(client.PublicKey())
+
+	// Client initiates handshake.
+	initPkt, err := client.InitiateHandshake(server.PublicKey())
+	if err != nil {
+		t.Fatalf("InitiateHandshake: %v", err)
+	}
+
+	// Server processes initiation → produces response.
+	remoteAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
+	serverResult, err := server.ProcessPacket(initPkt, remoteAddr)
+	if err != nil {
+		t.Fatalf("server process initiation: %v", err)
+	}
+	if serverResult.Type != PacketHandshakeResponse {
+		t.Fatalf("expected handshake response, got %d", serverResult.Type)
+	}
+
+	// Client processes response → produces keepalive.
+	clientResult, err := client.ProcessPacket(serverResult.Response, remoteAddr)
+	if err != nil {
+		t.Fatalf("client process response: %v", err)
+	}
+	if clientResult.Type != PacketHandshakeResponse {
+		t.Fatalf("expected handshake response (keepalive), got %d", clientResult.Type)
+	}
+	if clientResult.PeerKey != server.PublicKey() {
+		t.Fatal("client result PeerKey mismatch")
+	}
+
+	// Verify sessions exist on both sides.
+	if !client.HasSession(server.PublicKey()) {
+		t.Fatal("client has no session with server")
+	}
+	if !server.HasSession(client.PublicKey()) {
+		t.Fatal("server has no session with client")
+	}
+
+	// Server should be able to decrypt the keepalive.
+	keepaliveResult, err := server.ProcessPacket(clientResult.Response, remoteAddr)
+	if err != nil {
+		t.Fatalf("server process keepalive: %v", err)
+	}
+	if keepaliveResult.Type != PacketKeepalive {
+		t.Fatalf("expected keepalive, got %d", keepaliveResult.Type)
+	}
+
+	// Bidirectional data exchange: client → server.
+	payload1 := []byte("hello from client")
+	encrypted1, err := client.Encrypt(payload1, server.PublicKey())
+	if err != nil {
+		t.Fatalf("client Encrypt: %v", err)
+	}
+	decrypted1, err := server.ProcessPacket(encrypted1, remoteAddr)
+	if err != nil {
+		t.Fatalf("server decrypt: %v", err)
+	}
+	if string(decrypted1.Data) != string(payload1) {
+		t.Fatalf("client→server: got %q, want %q", decrypted1.Data, payload1)
+	}
+
+	// Bidirectional data exchange: server → client.
+	payload2 := []byte("hello from server")
+	encrypted2, err := server.Encrypt(payload2, client.PublicKey())
+	if err != nil {
+		t.Fatalf("server Encrypt: %v", err)
+	}
+	decrypted2, err := client.ProcessPacket(encrypted2, remoteAddr)
+	if err != nil {
+		t.Fatalf("client decrypt: %v", err)
+	}
+	if string(decrypted2.Data) != string(payload2) {
+		t.Fatalf("server→client: got %q, want %q", decrypted2.Data, payload2)
+	}
+}
+
+func TestServerConnect(t *testing.T) {
+	// Create two handlers.
+	h1, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h1: %v", err)
+	}
+	defer h1.Close()
+
+	h2, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h2: %v", err)
+	}
+	defer h2.Close()
+
+	// Authorize each other.
+	h1.AddPeer(h2.PublicKey())
+	h2.AddPeer(h1.PublicKey())
+
+	connected1 := make(chan NoisePublicKey, 1)
+	connected2 := make(chan NoisePublicKey, 1)
+	packet1 := make(chan []byte, 1)
+	packet2 := make(chan []byte, 1)
+
+	srv1, err := NewServer(ServerConfig{
+		Handler: h1,
+		OnPacket: func(data []byte, peerKey NoisePublicKey, h *Handler) {
+			d := make([]byte, len(data))
+			copy(d, data)
+			packet1 <- d
+		},
+		OnPeerConnected: func(peerKey NoisePublicKey, h *Handler) {
+			connected1 <- peerKey
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer srv1: %v", err)
+	}
+
+	srv2, err := NewServer(ServerConfig{
+		Handler: h2,
+		OnPacket: func(data []byte, peerKey NoisePublicKey, h *Handler) {
+			d := make([]byte, len(data))
+			copy(d, data)
+			packet2 <- d
+		},
+		OnPeerConnected: func(peerKey NoisePublicKey, h *Handler) {
+			connected2 <- peerKey
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer srv2: %v", err)
+	}
+
+	conn1, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket conn1: %v", err)
+	}
+	defer conn1.Close()
+
+	conn2, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket conn2: %v", err)
+	}
+	defer conn2.Close()
+
+	go srv1.Serve(conn1)
+	defer srv1.Close()
+
+	go srv2.Serve(conn2)
+	defer srv2.Close()
+
+	// Give servers time to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// srv1 connects to srv2.
+	addr2 := conn2.LocalAddr().(*net.UDPAddr)
+	if err := srv1.Connect(h2.PublicKey(), addr2); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	// Verify OnPeerConnected fires on both sides.
+	select {
+	case key := <-connected1:
+		if key != h2.PublicKey() {
+			t.Fatal("srv1 connected to wrong peer")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("srv1 OnPeerConnected not called")
+	}
+
+	select {
+	case key := <-connected2:
+		if key != h1.PublicKey() {
+			t.Fatal("srv2 connected to wrong peer")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("srv2 OnPeerConnected not called")
+	}
+
+	// Exchange data: srv1 → srv2.
+	payload1 := []byte("data from srv1")
+	if err := srv1.Send(payload1, h2.PublicKey()); err != nil {
+		t.Fatalf("srv1 Send: %v", err)
+	}
+	select {
+	case data := <-packet2:
+		if string(data) != string(payload1) {
+			t.Fatalf("srv2 received: got %q, want %q", data, payload1)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("srv2 did not receive data")
+	}
+
+	// Exchange data: srv2 → srv1.
+	payload2 := []byte("data from srv2")
+	if err := srv2.Send(payload2, h1.PublicKey()); err != nil {
+		t.Fatalf("srv2 Send: %v", err)
+	}
+	select {
+	case data := <-packet1:
+		if string(data) != string(payload2) {
+			t.Fatalf("srv1 received: got %q, want %q", data, payload2)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("srv1 did not receive data")
+	}
+}
+
 // getFirstKeypair returns the first keypair from a handler's internal map.
 // Used by tests to craft synthetic transport packets.
 func getFirstKeypair(t *testing.T, h *Handler) *Keypair {

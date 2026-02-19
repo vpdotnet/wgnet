@@ -118,6 +118,8 @@ func (mh *MultiHandler) ProcessPacket(data []byte, remoteAddr *net.UDPAddr) (*Mu
 	switch msgType {
 	case MessageInitiationType:
 		return mh.routeHandshake(data, remoteAddr)
+	case MessageResponseType, MessageCookieReplyType:
+		return mh.routeByReceiverIndex(data, remoteAddr)
 	case MessageTransportType:
 		return mh.routeTransport(data, remoteAddr)
 	default:
@@ -165,6 +167,35 @@ func (mh *MultiHandler) routeTransport(data []byte, remoteAddr *net.UDPAddr) (*M
 	}
 
 	return nil, fmt.Errorf("no handler owns receiver index %d", receiverIdx)
+}
+
+// routeByReceiverIndex routes type-2 (response) and type-3 (cookie reply) messages
+// by checking which handler has a pending handshake matching the receiver index.
+func (mh *MultiHandler) routeByReceiverIndex(data []byte, remoteAddr *net.UDPAddr) (*MultiPacketResult, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("packet too short for receiver index: %d bytes", len(data))
+	}
+
+	receiverIdx := binary_le_uint32(data[4:8])
+
+	mh.mu.RLock()
+	defer mh.mu.RUnlock()
+
+	for _, h := range mh.handlers {
+		if h.hasHandshakeIndex(receiverIdx) {
+			result, err := h.ProcessPacket(data, remoteAddr)
+			if err != nil {
+				return nil, err
+			}
+			// result may be nil (cookie reply returns nil)
+			if result == nil {
+				return nil, nil
+			}
+			return &MultiPacketResult{PacketResult: result, Handler: h}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no handler has pending handshake for receiver index %d", receiverIdx)
 }
 
 // Maintenance calls Maintenance on all handlers.
