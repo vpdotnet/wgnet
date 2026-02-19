@@ -327,6 +327,125 @@ func TestMultiHandlerAddRemove(t *testing.T) {
 	}
 }
 
+func TestMultiHandlerRouteByReceiverIndex(t *testing.T) {
+	// Create server handlers.
+	h1, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h1: %v", err)
+	}
+	defer h1.Close()
+
+	h2, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h2: %v", err)
+	}
+	defer h2.Close()
+
+	mh, err := NewMultiHandler(h1, h2)
+	if err != nil {
+		t.Fatalf("NewMultiHandler: %v", err)
+	}
+	defer mh.Close()
+
+	// Create a client that will handshake with h1.
+	client, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler client: %v", err)
+	}
+	defer client.Close()
+
+	client.AddPeer(h1.PublicKey())
+	h1.AddPeer(client.PublicKey())
+
+	// Client initiates handshake.
+	initPkt, err := client.InitiateHandshake(h1.PublicKey())
+	if err != nil {
+		t.Fatalf("InitiateHandshake: %v", err)
+	}
+
+	remoteAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
+
+	// MultiHandler processes the initiation (type 1 — routed by MAC1).
+	result, err := mh.ProcessPacket(initPkt, remoteAddr)
+	if err != nil {
+		t.Fatalf("process initiation: %v", err)
+	}
+	if result.Handler != h1 {
+		t.Fatal("initiation should route to h1")
+	}
+
+	// The response is a type-2 packet. Now we wrap it in a MultiHandler
+	// on the client side to test type-2 routing by receiver index.
+	clientMH, err := NewMultiHandler(client)
+	if err != nil {
+		t.Fatalf("NewMultiHandler client: %v", err)
+	}
+	defer clientMH.Close()
+
+	// Process the type-2 response through the client's MultiHandler.
+	clientResult, err := clientMH.ProcessPacket(result.Response, remoteAddr)
+	if err != nil {
+		t.Fatalf("client process type-2 response: %v", err)
+	}
+	if clientResult.Handler != client {
+		t.Fatal("type-2 should route to client handler")
+	}
+	if clientResult.Type != PacketHandshakeResponse {
+		t.Fatalf("expected handshake response, got %d", clientResult.Type)
+	}
+
+	// Verify session is established.
+	if !client.HasSession(h1.PublicKey()) {
+		t.Fatal("client should have session with h1")
+	}
+}
+
+func TestMultiHandlerMaintenance(t *testing.T) {
+	h1, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h1: %v", err)
+	}
+	defer h1.Close()
+
+	h2, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h2: %v", err)
+	}
+	defer h2.Close()
+
+	mh, err := NewMultiHandler(h1, h2)
+	if err != nil {
+		t.Fatalf("NewMultiHandler: %v", err)
+	}
+	defer mh.Close()
+
+	// Inject stale handshakes into both handlers.
+	staleTime := time.Now().Add(-(RejectAfterTime + time.Minute))
+	h1.handshakesMutex.Lock()
+	h1.handshakes[111] = &Handshake{localIndex: 111, created: staleTime}
+	h1.handshakesMutex.Unlock()
+
+	h2.handshakesMutex.Lock()
+	h2.handshakes[222] = &Handshake{localIndex: 222, created: staleTime}
+	h2.handshakesMutex.Unlock()
+
+	// Run Maintenance on the MultiHandler.
+	mh.Maintenance()
+
+	// Verify stale handshakes are cleaned up.
+	h1.handshakesMutex.RLock()
+	if len(h1.handshakes) != 0 {
+		t.Fatal("h1 stale handshake should be cleaned up")
+	}
+	h1.handshakesMutex.RUnlock()
+
+	h2.handshakesMutex.RLock()
+	if len(h2.handshakes) != 0 {
+		t.Fatal("h2 stale handshake should be cleaned up")
+	}
+	h2.handshakesMutex.RUnlock()
+}
+
 func TestMultiHandlerEndToEnd(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("wireguard-loop-go does not support Windows")

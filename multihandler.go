@@ -180,7 +180,18 @@ func (mh *MultiHandler) routeByReceiverIndex(data []byte, remoteAddr *net.UDPAdd
 		return nil, fmt.Errorf("packet too short for receiver index: %d bytes", len(data))
 	}
 
-	receiverIdx := binary_le_uint32(data[4:8])
+	// For type-2 (response): layout is [Type:4][Sender:4][Receiver:4]...
+	// For type-3 (cookie reply): layout is [Type:4][Receiver:4]...
+	msgType := binary_le_uint32(data[0:4])
+	var receiverIdx uint32
+	if msgType == MessageResponseType {
+		if len(data) < 12 {
+			return nil, fmt.Errorf("response packet too short: %d bytes", len(data))
+		}
+		receiverIdx = binary_le_uint32(data[8:12])
+	} else {
+		receiverIdx = binary_le_uint32(data[4:8])
+	}
 
 	mh.mu.RLock()
 	defer mh.mu.RUnlock()

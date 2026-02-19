@@ -655,6 +655,209 @@ func TestServerConnect(t *testing.T) {
 	}
 }
 
+func TestServerConnectWith(t *testing.T) {
+	// Create two handler identities for the server.
+	h1, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h1: %v", err)
+	}
+	defer h1.Close()
+
+	h2, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h2: %v", err)
+	}
+	defer h2.Close()
+
+	// Create a remote peer handler.
+	peer, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler peer: %v", err)
+	}
+	defer peer.Close()
+
+	// Authorize peer on h2 (not h1).
+	h2.AddPeer(peer.PublicKey())
+	peer.AddPeer(h2.PublicKey())
+
+	mh, err := NewMultiHandler(h1, h2)
+	if err != nil {
+		t.Fatalf("NewMultiHandler: %v", err)
+	}
+
+	connectedCh := make(chan NoisePublicKey, 1)
+	srv, err := NewServer(ServerConfig{
+		MultiHandler: mh,
+		OnPacket:     func([]byte, NoisePublicKey, *Handler) {},
+		OnPeerConnected: func(peerKey NoisePublicKey, h *Handler) {
+			connectedCh <- peerKey
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket: %v", err)
+	}
+	defer conn.Close()
+
+	// Peer server to receive the initiation.
+	peerSrv, err := NewServer(ServerConfig{
+		Handler:  peer,
+		OnPacket: func([]byte, NoisePublicKey, *Handler) {},
+		OnPeerConnected: func(peerKey NoisePublicKey, h *Handler) {
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer peer: %v", err)
+	}
+
+	peerConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket peer: %v", err)
+	}
+	defer peerConn.Close()
+
+	go srv.Serve(conn)
+	defer srv.Close()
+
+	go peerSrv.Serve(peerConn)
+	defer peerSrv.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Connect using multi-handler mode should fail with Connect.
+	peerAddr := peerConn.LocalAddr().(*net.UDPAddr)
+	err = srv.Connect(peer.PublicKey(), peerAddr)
+	if err == nil {
+		t.Fatal("Connect should fail in multi-handler mode")
+	}
+
+	// ConnectWith should succeed.
+	err = srv.ConnectWith(peer.PublicKey(), peerAddr, h2)
+	if err != nil {
+		t.Fatalf("ConnectWith: %v", err)
+	}
+
+	// Wait for the handshake to complete.
+	select {
+	case key := <-connectedCh:
+		if key != peer.PublicKey() {
+			t.Fatal("connected to wrong peer")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnPeerConnected not called")
+	}
+}
+
+func TestServerSendMultiHandler(t *testing.T) {
+	h1, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h1: %v", err)
+	}
+	defer h1.Close()
+
+	h2, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler h2: %v", err)
+	}
+	defer h2.Close()
+
+	mh, err := NewMultiHandler(h1, h2)
+	if err != nil {
+		t.Fatalf("NewMultiHandler: %v", err)
+	}
+
+	packetCh := make(chan []byte, 1)
+	connectedCh := make(chan NoisePublicKey, 1)
+	srv, err := NewServer(ServerConfig{
+		MultiHandler: mh,
+		OnPacket: func(data []byte, peerKey NoisePublicKey, h *Handler) {
+			d := make([]byte, len(data))
+			copy(d, data)
+			packetCh <- d
+		},
+		OnPeerConnected: func(peerKey NoisePublicKey, h *Handler) {
+			connectedCh <- peerKey
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket: %v", err)
+	}
+	defer conn.Close()
+
+	go srv.Serve(conn)
+	defer srv.Close()
+
+	// Create a client and handshake targeting h1.
+	client, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket client: %v", err)
+	}
+	defer client.Close()
+
+	initPkt, clientPrivKey := buildHandshakeInitiation(t, h1)
+	clientPubKey := clientPrivKey.PublicKey()
+
+	if _, err := client.WriteTo(initPkt, conn.LocalAddr()); err != nil {
+		t.Fatalf("send initiation: %v", err)
+	}
+
+	buf := make([]byte, 256)
+	client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, _, err := client.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if n != MessageResponseSize {
+		t.Fatalf("response size: got %d, want %d", n, MessageResponseSize)
+	}
+
+	select {
+	case <-connectedCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnPeerConnected not called")
+	}
+
+	// Wait for server to process.
+	time.Sleep(50 * time.Millisecond)
+
+	// Send should auto-select h1 for this peer.
+	payload := []byte("auto-select test")
+	if err := srv.Send(payload, clientPubKey); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// Read and decrypt on client side.
+	client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, _, err = client.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("read transport: %v", err)
+	}
+	if n < MessageTransportHeaderSize {
+		t.Fatalf("packet too short: %d", n)
+	}
+
+	msgType := binary_le_uint32(buf[0:4])
+	if msgType != MessageTransportType {
+		t.Fatalf("message type: got %d, want %d", msgType, MessageTransportType)
+	}
+
+	// Send for unknown peer should fail.
+	var unknownKey NoisePublicKey
+	copy(unknownKey[:], []byte("unknown-peer-key-for-testing!!!!"))
+	if err := srv.Send([]byte("test"), unknownKey); err == nil {
+		t.Fatal("Send to unknown peer should fail in multi-handler mode")
+	}
+}
+
 // getFirstKeypair returns the first keypair from a handler's internal map.
 // Used by tests to craft synthetic transport packets.
 func getFirstKeypair(t *testing.T, h *Handler) *Keypair {
