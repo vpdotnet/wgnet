@@ -1,8 +1,6 @@
 # wgnet
 
-A Go library implementing the WireGuard protocol for point-to-point connections.
-
-Unlike the standard WireGuard implementation which is designed for multipoint networks, wgnet focuses on simple client/server endpoint connections. It handles the full Noise IKpsk2 handshake, transport encryption/decryption, replay protection, and session management.
+A Go library that abstracts the WireGuard protocol behind a simple interface: feed it UDP packets, get back decrypted network packets, and vice versa. All the cryptography, handshakes, session management, and replay protection are handled internally.
 
 ## Install
 
@@ -10,86 +8,104 @@ Unlike the standard WireGuard implementation which is designed for multipoint ne
 go get github.com/vpdotnet/wgnet
 ```
 
-## Usage
-
-### Server
+## Quick Start
 
 ```go
-handler, err := wgnet.NewHandler(wgnet.Config{
-    // Optionally provide a static private key; omit to auto-generate.
-    // PrivateKey: myKey,
-
-    // Called when an unknown peer attempts to connect.
-    OnUnknownPeer: func(pubKey wgnet.NoisePublicKey, addr *net.UDPAddr) bool {
-        // Return true to accept, false to reject.
-        return false
-    },
-})
-if err != nil {
-    log.Fatal(err)
-}
+// Create a handler (generates a new identity if no private key is provided)
+handler, _ := wgnet.NewHandler(wgnet.Config{})
 defer handler.Close()
 
-// Authorize a peer by its public key.
+// Authorize peers by public key
 handler.AddPeer(peerPublicKey)
 
-// Process incoming UDP packets.
-result, err := handler.ProcessPacket(data, remoteAddr)
+// Start maintenance (cookie rotation, session cleanup)
+go func() {
+    for range time.Tick(10 * time.Second) {
+        handler.Maintenance()
+    }
+}()
+```
+
+### Receiving: UDP in, network packets out
+
+```go
+// Read a UDP datagram from the wire
+n, remoteAddr, _ := conn.ReadFromUDP(buf)
+
+// Hand it to the handler
+result, err := handler.ProcessPacket(buf[:n], remoteAddr)
 if err != nil {
-    log.Println("error:", err)
-    return
+    log.Println(err)
+    continue
 }
 
 switch result.Type {
 case wgnet.PacketHandshakeResponse, wgnet.PacketCookieReply:
-    // Send result.Response back to remoteAddr.
+    // Protocol response — relay back over UDP
     conn.WriteToUDP(result.Response, remoteAddr)
 
 case wgnet.PacketTransportData:
-    // result.Data contains the decrypted payload.
-    handlePayload(result.Data, result.PeerKey)
+    // Decrypted network packet (e.g. IPv4/IPv6) ready for processing
+    forward(result.Data, result.PeerKey)
 
 case wgnet.PacketKeepalive:
-    // Keepalive received, nothing to do.
+    // Nothing to do
 }
-
-// Encrypt data to send to a peer.
-packet, err := handler.Encrypt(payload, peerPublicKey)
-if err != nil {
-    log.Println("encrypt:", err)
-    return
-}
-conn.WriteToUDP(packet, peerAddr)
 ```
 
-### Key Generation
+### Sending: network packets in, UDP out
 
 ```go
-privKey, err := wgnet.GeneratePrivateKey()
-if err != nil {
-    log.Fatal(err)
-}
+encrypted, _ := handler.Encrypt(ipPacket, peerPublicKey)
+conn.WriteToUDP(encrypted, peerAddr)
+```
+
+## Multiple Identities on One Port
+
+`MultiHandler` lets a single UDP socket serve multiple WireGuard server identities. Incoming packets are automatically routed to the correct handler based on MAC1 (handshakes) or receiver index (transport data).
+
+```go
+mh, _ := wgnet.NewMultiHandler(handler1, handler2)
+defer mh.Close()
+
+result, _ := mh.ProcessPacket(buf[:n], remoteAddr)
+// result.Handler tells you which identity was targeted
+fmt.Println("routed to", result.Handler.PublicKey())
+```
+
+Handlers can be added or removed at runtime:
+
+```go
+mh.AddHandler(handler3)
+mh.RemoveHandler(handler2.PublicKey())
+```
+
+## Peer Management
+
+```go
+// Authorize with optional preshared key
+handler.AddPeer(pubKey)
+handler.AddPeerWithPSK(pubKey, psk)
+
+// Auto-authorize unknown peers via callback
+handler, _ := wgnet.NewHandler(wgnet.Config{
+    OnUnknownPeer: func(pk wgnet.NoisePublicKey, addr *net.UDPAddr) bool {
+        return isAllowed(pk)
+    },
+})
+
+// Set peer expiry
+handler.SetPeerExpiry(pubKey, time.Now().Add(24 * time.Hour))
+
+// Remove peer (tears down session immediately)
+handler.RemovePeer(pubKey)
+```
+
+## Key Generation
+
+```go
+privKey, _ := wgnet.GeneratePrivateKey()
 pubKey := privKey.PublicKey()
-```
-
-### Preshared Keys
-
-```go
-handler.AddPeerWithPSK(peerPublicKey, presharedKey)
-```
-
-### Maintenance
-
-Call `Maintenance()` periodically to rotate cookie secrets and clean up expired sessions:
-
-```go
-go func() {
-    ticker := time.NewTicker(10 * time.Second)
-    defer ticker.Stop()
-    for range ticker.C {
-        handler.Maintenance()
-    }
-}()
 ```
 
 ## License
