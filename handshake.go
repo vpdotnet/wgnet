@@ -29,15 +29,8 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 		return nil, fmt.Errorf("decode handshake: %w", err)
 	}
 
-	// Validate MAC1
+	// Validate MAC1 — always drop if invalid, regardless of load state.
 	if !h.cookieChecker.CheckMAC1(data) {
-		if h.isUnderLoad() {
-			cookieReply, err := h.GenerateCookieReply(remoteAddr.IP, data[116:132])
-			if err != nil {
-				return nil, fmt.Errorf("generate cookie reply: %w", err)
-			}
-			return &PacketResult{Type: PacketCookieReply, Response: cookieReply}, nil
-		}
 		return nil, fmt.Errorf("invalid MAC1")
 	}
 
@@ -50,14 +43,14 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 			}
 
 			if !h.cookieChecker.CheckMAC2(data, ipBytes) {
-				cookieReply, err := h.GenerateCookieReply(remoteAddr.IP, data[116:132])
+				cookieReply, err := h.GenerateCookieReply(remoteAddr.IP, msg.Sender, data[116:132])
 				if err != nil {
 					return nil, fmt.Errorf("generate cookie reply: %w", err)
 				}
 				return &PacketResult{Type: PacketCookieReply, Response: cookieReply}, nil
 			}
 		} else {
-			cookieReply, err := h.GenerateCookieReply(remoteAddr.IP, data[116:132])
+			cookieReply, err := h.GenerateCookieReply(remoteAddr.IP, msg.Sender, data[116:132])
 			if err != nil {
 				return nil, fmt.Errorf("generate cookie reply: %w", err)
 			}
@@ -133,11 +126,11 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 	}
 
 	// Update last handshake time
-	h.peersMutex.RLock()
+	h.peersMutex.Lock()
 	if info, exists := h.peers[hs.remoteStatic]; exists {
 		info.LastHandshake = now()
 	}
-	h.peersMutex.RUnlock()
+	h.peersMutex.Unlock()
 
 	// === Prepare response ===
 	var respMsg MessageResponse
@@ -227,6 +220,7 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 	// === Store handshake ===
 	hs.localIndex = senderIdx
 	hs.state = handshakeResponseCreated
+	hs.created = now()
 
 	h.handshakesMutex.Lock()
 	h.handshakes[senderIdx] = &hs
@@ -445,6 +439,7 @@ func (h *Handler) InitiateHandshake(peerKey NoisePublicKey) ([]byte, error) {
 	}
 	hs.localIndex = senderIdx
 	hs.state = handshakeInitiationCreated
+	hs.created = now()
 
 	// Build wire-format packet
 	pkt := make([]byte, MessageInitiationSize)
@@ -456,8 +451,11 @@ func (h *Handler) InitiateHandshake(peerKey NoisePublicKey) ([]byte, error) {
 
 	// Add MACs using the per-peer cookie generator
 	h.peersMutex.RLock()
-	peerInfo := h.peers[peerKey]
+	peerInfo, peerExists := h.peers[peerKey]
 	h.peersMutex.RUnlock()
+	if !peerExists {
+		return nil, fmt.Errorf("peer removed during handshake initiation")
+	}
 	peerInfo.cookieGen.AddMacs(pkt)
 
 	// Store handshake state
@@ -573,11 +571,11 @@ func (h *Handler) processHandshakeResponse(data []byte) (*PacketResult, error) {
 	h.handshakesMutex.Unlock()
 
 	// Update last handshake time
-	h.peersMutex.RLock()
+	h.peersMutex.Lock()
 	if info, exists := h.peers[peerKey]; exists {
 		info.LastHandshake = now()
 	}
-	h.peersMutex.RUnlock()
+	h.peersMutex.Unlock()
 
 	// Generate keepalive — standard WireGuard behavior after receiving response
 	keepalive, err := h.encryptDataPacket([]byte{}, peerKey)

@@ -106,6 +106,8 @@ func (mh *MultiHandler) Handler(pubKey NoisePublicKey) *Handler {
 // ProcessPacket routes an incoming packet to the correct handler and processes it.
 //
 // For handshake initiation (type 1): iterates handlers and checks MAC1 against each.
+// For handshake response (type 2) and cookie reply (type 3): extracts the receiver
+// index and checks pending handshake ownership.
 // For transport data (type 4): extracts the receiver index and checks keypair ownership.
 // Other message types return an error.
 func (mh *MultiHandler) ProcessPacket(data []byte, remoteAddr *net.UDPAddr) (*MultiPacketResult, error) {

@@ -281,11 +281,35 @@ func (h *Handler) Maintenance() {
 	}
 	h.cookieChecker.Unlock()
 
+	h.cleanupHandshakes()
 	h.cleanupSessions()
+}
+
+// cleanupHandshakes removes pending handshakes older than RejectAfterTime.
+func (h *Handler) cleanupHandshakes() {
+	h.handshakesMutex.Lock()
+	defer h.handshakesMutex.Unlock()
+
+	if len(h.handshakes) == 0 {
+		return
+	}
+
+	n := now()
+	for idx, hs := range h.handshakes {
+		if n.Sub(hs.created) > RejectAfterTime {
+			delete(h.handshakes, idx)
+		}
+	}
 }
 
 // Close cleans up handler resources.
 func (h *Handler) Close() error {
+	h.handshakesMutex.Lock()
+	for key := range h.handshakes {
+		delete(h.handshakes, key)
+	}
+	h.handshakesMutex.Unlock()
+
 	h.sessionsMutex.Lock()
 	for key := range h.sessions {
 		delete(h.sessions, key)

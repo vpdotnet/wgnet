@@ -48,8 +48,10 @@ type Server struct {
 	maintenanceInterval time.Duration
 	readBufferSize      int
 
-	conn      net.PacketConn
-	done      chan struct{}
+	connMu sync.RWMutex
+	conn   net.PacketConn
+	done   chan struct{}
+
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 
@@ -100,7 +102,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 // Serve starts the read loop and maintenance goroutines, blocking until
 // Close is called or the connection encounters a permanent error.
 func (s *Server) Serve(conn net.PacketConn) error {
+	s.connMu.Lock()
 	s.conn = conn
+	s.connMu.Unlock()
 
 	s.wg.Add(2)
 	go s.readLoop()
@@ -151,8 +155,11 @@ func (s *Server) Close() error {
 		close(s.done)
 	})
 	// Always try to unblock a pending ReadFrom, even if closeOnce already ran.
-	if s.conn != nil {
-		s.conn.SetReadDeadline(time.Now())
+	s.connMu.RLock()
+	conn := s.conn
+	s.connMu.RUnlock()
+	if conn != nil {
+		conn.SetReadDeadline(time.Now())
 	}
 	s.wg.Wait()
 	return nil
@@ -284,6 +291,13 @@ func (s *Server) ConnectWith(peerKey NoisePublicKey, addr *net.UDPAddr, handler 
 }
 
 func (s *Server) connectWith(peerKey NoisePublicKey, addr *net.UDPAddr, handler *Handler) error {
+	s.connMu.RLock()
+	conn := s.conn
+	s.connMu.RUnlock()
+	if conn == nil {
+		return errors.New("wgnet: server not serving; call Serve first")
+	}
+
 	initPkt, err := handler.InitiateHandshake(peerKey)
 	if err != nil {
 		return fmt.Errorf("wgnet: initiate handshake: %w", err)
@@ -301,7 +315,7 @@ func (s *Server) connectWith(peerKey NoisePublicKey, addr *net.UDPAddr, handler 
 		s.handlersMu.Unlock()
 	}
 
-	_, err = s.conn.WriteTo(initPkt, addr)
+	_, err = conn.WriteTo(initPkt, addr)
 	return err
 }
 

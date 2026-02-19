@@ -41,6 +41,7 @@ type Handshake struct {
 	remoteStatic            NoisePublicKey
 	remoteEphemeral         NoisePublicKey
 	precomputedStaticStatic [NoisePublicKeySize]byte
+	created                 time.Time
 }
 
 // Session represents a peer session with rotating keypairs.
@@ -221,10 +222,13 @@ func (cg *CookieGenerator) AddMacs(msg []byte) {
 }
 
 // GenerateCookieReply generates a cookie reply message for DoS mitigation.
-func (h *Handler) GenerateCookieReply(clientIP net.IP, initMAC1 []byte) ([]byte, error) {
+// receiverIdx is the sender index from the incoming initiation message,
+// used to populate the Receiver field so the initiator can match the reply.
+func (h *Handler) GenerateCookieReply(clientIP net.IP, receiverIdx uint32, initMAC1 []byte) ([]byte, error) {
 	msg := make([]byte, MessageCookieReplySize)
 
 	binary_le_put_uint32(msg[0:4], MessageCookieReplyType)
+	binary_le_put_uint32(msg[4:8], receiverIdx)
 
 	if _, err := rand.Read(msg[8:32]); err != nil {
 		return nil, err
