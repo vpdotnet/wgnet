@@ -1,5 +1,8 @@
 # wgnet
 
+[![Tests](https://github.com/vpdotnet/wgnet/actions/workflows/test.yml/badge.svg)](https://github.com/vpdotnet/wgnet/actions/workflows/test.yml)
+[![Coverage Status](https://coveralls.io/repos/github/vpdotnet/wgnet/badge.svg?branch=master)](https://coveralls.io/github/vpdotnet/wgnet?branch=master)
+
 A Go library that abstracts the WireGuard protocol behind a simple interface: feed it UDP packets, get back decrypted network packets, and vice versa. All the cryptography, handshakes, session management, and replay protection are handled internally.
 
 ## Install
