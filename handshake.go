@@ -18,7 +18,9 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-// processHandshakeInitiation processes a handshake initiation from a peer.
+// processHandshakeInitiation processes a type-1 handshake initiation as the
+// responder. It decrypts the initiator's identity, validates MAC1/MAC2,
+// authorizes the peer, derives transport keys, and returns the response message.
 func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAddr) (*PacketResult, error) {
 	h.incrementActiveHandshakes()
 	defer h.decrementActiveHandshakes()
@@ -466,7 +468,10 @@ func (h *Handler) InitiateHandshake(peerKey NoisePublicKey) ([]byte, error) {
 	return pkt, nil
 }
 
-// processHandshakeResponse processes a type-2 handshake response from the responder.
+// processHandshakeResponse completes the handshake from the initiator's side by
+// processing a type-2 response. It resumes the Noise state from the pending
+// handshake, derives transport keys, establishes the session, and returns a
+// keepalive as the PacketResult response (standard WireGuard behavior).
 func (h *Handler) processHandshakeResponse(data []byte) (*PacketResult, error) {
 	msg, err := decodeMessageResponse(data)
 	if err != nil {

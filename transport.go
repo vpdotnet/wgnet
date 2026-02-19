@@ -10,7 +10,9 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// processDataPacket decrypts an incoming transport data packet.
+// processDataPacket decrypts an incoming type-4 transport data packet. It looks
+// up the keypair by receiver index, checks for replay, and decrypts the payload.
+// Empty payloads are returned as PacketKeepalive.
 func (h *Handler) processDataPacket(data []byte) (*PacketResult, error) {
 	if len(data) < MessageTransportHeaderSize {
 		return nil, fmt.Errorf("data packet too short: %d", len(data))
@@ -85,7 +87,8 @@ func (h *Handler) processDataPacket(data []byte) (*PacketResult, error) {
 	}, nil
 }
 
-// encryptDataPacket encrypts data for transmission to a peer.
+// encryptDataPacket encrypts data for transmission to a peer and returns a
+// complete type-4 transport packet. Pass empty data to generate a keepalive.
 func (h *Handler) encryptDataPacket(data []byte, peerKey NoisePublicKey) ([]byte, error) {
 	// Find session
 	h.sessionsMutex.RLock()

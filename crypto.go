@@ -18,7 +18,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-// Global protocol constants computed at init time.
+// Global protocol values derived from the Noise IKpsk2 parameters at init time.
 var (
 	initialChainKey [blake2s.Size]byte
 	initialHash     [blake2s.Size]byte
@@ -144,7 +144,8 @@ func (cc *CookieChecker) CheckMAC1(msg []byte) bool {
 	return hmac.Equal(computed[:], msg[smac1:smac2])
 }
 
-// CheckMAC2 verifies the MAC2 field of a message.
+// CheckMAC2 verifies the MAC2 field of a message. src is the sender's IP
+// address bytes (4 bytes for IPv4, 16 for IPv6) used to derive the cookie.
 func (cc *CookieChecker) CheckMAC2(msg []byte, src []byte) bool {
 	cc.RLock()
 	defer cc.RUnlock()
@@ -189,7 +190,9 @@ func (cg *CookieGenerator) Init(pk NoisePublicKey) {
 	cg.mac2.cookieSet = time.Time{}
 }
 
-// AddMacs adds MAC1 and MAC2 to a message.
+// AddMacs computes and writes MAC1 and MAC2 into the last 32 bytes of msg.
+// MAC2 is only set if a valid cookie is available (received via cookie reply);
+// otherwise the MAC2 field is left zeroed.
 func (cg *CookieGenerator) AddMacs(msg []byte) {
 	size := len(msg)
 
@@ -282,7 +285,7 @@ func calculateMAC1Key(publicKey NoisePublicKey) [32]byte {
 	return key
 }
 
-// mixHash mixes data into the hash.
+// mixHash computes dst = BLAKE2s(h || data).
 func mixHash(dst *[blake2s.Size]byte, h *[blake2s.Size]byte, data []byte) {
 	hash, _ := blake2s.New256(nil)
 	hash.Write(h[:])
@@ -290,18 +293,18 @@ func mixHash(dst *[blake2s.Size]byte, h *[blake2s.Size]byte, data []byte) {
 	hash.Sum(dst[:0])
 }
 
-// mixKey mixes a key with input.
+// mixKey derives a new chaining key: dst = KDF1(c, data).
 func mixKey(dst, c *[blake2s.Size]byte, data []byte) {
 	kdf1(dst, c[:], data)
 }
 
-// kdf1 derives a single key from input.
+// kdf1 derives one key using HMAC-BLAKE2s (HKDF-style extract + expand).
 func kdf1(t0 *[blake2s.Size]byte, key, input []byte) {
 	hmac1(t0, key, input)
 	hmac1(t0, t0[:], []byte{0x1})
 }
 
-// kdf2 derives two keys from input.
+// kdf2 derives two keys using HMAC-BLAKE2s (HKDF-style extract + expand).
 func kdf2(t0, t1 *[blake2s.Size]byte, key, input []byte) {
 	var prk [blake2s.Size]byte
 	hmac1(&prk, key, input)
@@ -310,7 +313,8 @@ func kdf2(t0, t1 *[blake2s.Size]byte, key, input []byte) {
 	setZero(prk[:])
 }
 
-// kdf3 derives three keys from input.
+// kdf3 derives up to three keys using HMAC-BLAKE2s (HKDF-style extract + expand).
+// If t2 is nil, only two keys are derived.
 func kdf3(t0, t1, t2 *[blake2s.Size]byte, data []byte, key []byte) {
 	var prk [blake2s.Size]byte
 	hmac1(&prk, key, data)

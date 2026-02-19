@@ -17,8 +17,9 @@ type MultiPacketResult struct {
 }
 
 // MultiHandler multiplexes multiple Handler instances on a single UDP port.
-// It routes incoming packets to the correct handler based on MAC1 (for handshakes)
-// or receiver index (for transport data).
+// It routes incoming packets to the correct handler based on MAC1 (for
+// initiation messages), pending handshake index (for responses and cookie
+// replies), or keypair index (for transport data).
 type MultiHandler struct {
 	mu       sync.RWMutex
 	handlers []*Handler
@@ -129,7 +130,7 @@ func (mh *MultiHandler) ProcessPacket(data []byte, remoteAddr *net.UDPAddr) (*Mu
 	}
 }
 
-// routeHandshake finds the handler whose MAC1 matches and processes the handshake.
+// routeHandshake routes a type-1 initiation by finding the handler whose MAC1 matches.
 func (mh *MultiHandler) routeHandshake(data []byte, remoteAddr *net.UDPAddr) (*MultiPacketResult, error) {
 	mh.mu.RLock()
 	defer mh.mu.RUnlock()
@@ -147,7 +148,8 @@ func (mh *MultiHandler) routeHandshake(data []byte, remoteAddr *net.UDPAddr) (*M
 	return nil, fmt.Errorf("no handler matched MAC1 for handshake initiation")
 }
 
-// routeTransport finds the handler that owns the receiver index and processes the packet.
+// routeTransport routes a type-4 transport packet by finding the handler that owns
+// the keypair for the receiver index.
 func (mh *MultiHandler) routeTransport(data []byte, remoteAddr *net.UDPAddr) (*MultiPacketResult, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("transport packet too short: %d bytes", len(data))
@@ -210,7 +212,7 @@ func (mh *MultiHandler) Maintenance() {
 	}
 }
 
-// Close closes all handlers.
+// Close closes all handlers, returning the first error encountered.
 func (mh *MultiHandler) Close() error {
 	mh.mu.Lock()
 	defer mh.mu.Unlock()

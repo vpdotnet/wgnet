@@ -32,7 +32,9 @@ type Config struct {
 type PacketType int
 
 const (
-	// PacketHandshakeResponse indicates a handshake response that should be sent back.
+	// PacketHandshakeResponse indicates a completed handshake with response bytes
+	// that should be sent back. On the responder side this is the handshake response
+	// message; on the initiator side it is a keepalive confirming the session.
 	PacketHandshakeResponse PacketType = iota
 	// PacketCookieReply indicates a cookie reply that should be sent back.
 	PacketCookieReply
@@ -54,7 +56,9 @@ type PacketResult struct {
 	PeerKey NoisePublicKey
 }
 
-// Handler implements the WireGuard protocol for point-to-point connections.
+// Handler implements the WireGuard protocol, supporting both initiator and
+// responder roles. Use InitiateHandshake to start a connection, or pass
+// incoming packets to ProcessPacket to respond to them.
 type Handler struct {
 	privateKey      NoisePrivateKey
 	publicKey       NoisePublicKey
@@ -207,6 +211,7 @@ func (h *Handler) RemovePeer(peerKey NoisePublicKey) {
 }
 
 // IsAuthorizedPeer checks if a peer's public key is authorized.
+// Returns false if the peer is unknown or has passed its ExpiresAt time.
 func (h *Handler) IsAuthorizedPeer(peerKey NoisePublicKey) bool {
 	h.peersMutex.RLock()
 	info, exists := h.peers[peerKey]
@@ -236,7 +241,10 @@ func (h *Handler) getPresharedKey(peerKey NoisePublicKey) NoisePresharedKey {
 }
 
 // ProcessPacket processes an incoming WireGuard packet and returns the result.
-// The caller is responsible for sending any Response bytes back to remoteAddr.
+// It dispatches by message type: initiation (1), response (2), cookie reply (3),
+// and transport data (4). The caller is responsible for sending any Response
+// bytes back to remoteAddr. Returns nil, nil for cookie replies (the cookie is
+// stored internally for the next initiation attempt).
 func (h *Handler) ProcessPacket(data []byte, remoteAddr *net.UDPAddr) (*PacketResult, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("packet too short: %d bytes", len(data))
@@ -268,7 +276,9 @@ func (h *Handler) GenerateKeepalive(peerKey NoisePublicKey) ([]byte, error) {
 	return h.encryptDataPacket([]byte{}, peerKey)
 }
 
-// Maintenance performs periodic cleanup. Call this periodically (e.g. every 10s).
+// Maintenance performs periodic cleanup: rotates the cookie secret, removes
+// stale pending handshakes, and expires inactive sessions. Call this
+// periodically (e.g. every 10s). The Server calls it automatically.
 func (h *Handler) Maintenance() {
 	// Rotate cookie secret if needed
 	h.cookieChecker.Lock()
@@ -302,7 +312,8 @@ func (h *Handler) cleanupHandshakes() {
 	}
 }
 
-// Close cleans up handler resources.
+// Close clears all pending handshakes, sessions, and keypairs. It does not
+// affect peer authorization — peers remain in the authorized list.
 func (h *Handler) Close() error {
 	h.handshakesMutex.Lock()
 	for key := range h.handshakes {
@@ -325,6 +336,7 @@ func (h *Handler) Close() error {
 	return nil
 }
 
+// cleanupSessions removes sessions that have been inactive for longer than RejectAfterTime.
 func (h *Handler) cleanupSessions() {
 	h.sessionsMutex.Lock()
 	defer h.sessionsMutex.Unlock()
