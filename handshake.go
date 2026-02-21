@@ -119,12 +119,10 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 
 	// === Peer authorization ===
 	if !h.IsAuthorizedPeer(hs.remoteStatic) {
-		if h.onUnknownPeer != nil && h.onUnknownPeer(hs.remoteStatic, remoteAddr) {
-			// Callback authorized the peer, add it
-			h.AddPeer(hs.remoteStatic)
-		} else {
-			return nil, fmt.Errorf("unauthorized peer")
+		if h.onUnknownPeer != nil {
+			h.onUnknownPeer(hs.remoteStatic, remoteAddr, data)
 		}
+		return nil, fmt.Errorf("unauthorized peer")
 	}
 
 	// Update last handshake time

@@ -90,10 +90,22 @@ mh.RemoveHandler(handler2.PublicKey())
 handler.AddPeer(pubKey)
 handler.AddPeerWithPSK(pubKey, psk)
 
-// Auto-authorize unknown peers via callback
+// Async authorize unknown peers via callback
 handler, _ := wgnet.NewHandler(wgnet.Config{
-    OnUnknownPeer: func(pk wgnet.NoisePublicKey, addr *net.UDPAddr) bool {
-        return isAllowed(pk)
+    OnUnknownPeer: func(pk wgnet.NoisePublicKey, addr *net.UDPAddr, packet []byte) {
+        pkt := make([]byte, len(packet))
+        copy(pkt, packet)
+        go func() {
+            if !isAllowed(pk) {
+                return
+            }
+            result, err := handler.AcceptUnknownPeer(pk, pkt, addr)
+            if err != nil {
+                log.Println("accept peer:", err)
+                return
+            }
+            conn.WriteToUDP(result.Response, addr)
+        }()
     },
 })
 

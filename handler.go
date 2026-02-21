@@ -14,9 +14,13 @@ import (
 )
 
 // UnknownPeerFunc is called when a handshake is received from an unknown peer.
-// Return true to authorize the peer and proceed with the handshake.
-// Return false to silently drop the handshake.
-type UnknownPeerFunc func(publicKey NoisePublicKey, remoteAddr *net.UDPAddr) bool
+// The packet slice is only valid for the duration of the call — the callback
+// must copy it before returning if it needs to keep the data (e.g. to pass to
+// AcceptUnknownPeer asynchronously). To accept the peer, call
+// Handler.AcceptUnknownPeer with the peer key and packet to resume the
+// handshake. The caller is responsible for sending the resulting response
+// bytes back to remoteAddr.
+type UnknownPeerFunc func(publicKey NoisePublicKey, remoteAddr *net.UDPAddr, packet []byte)
 
 // Config configures a Handler.
 type Config struct {
@@ -177,6 +181,15 @@ func (h *Handler) AddPeerWithPSK(peerKey NoisePublicKey, psk NoisePresharedKey) 
 	}
 	peerInfo.cookieGen.Init(peerKey)
 	h.peers[peerKey] = peerInfo
+}
+
+// AcceptUnknownPeer authorizes a previously unknown peer and re-processes its
+// handshake initiation packet. Call this from an OnUnknownPeer callback (or later)
+// after verifying the peer. The caller is responsible for sending result.Response
+// back to remoteAddr.
+func (h *Handler) AcceptUnknownPeer(peerKey NoisePublicKey, initiationPacket []byte, remoteAddr *net.UDPAddr) (*PacketResult, error) {
+	h.AddPeer(peerKey)
+	return h.processHandshakeInitiation(initiationPacket, remoteAddr)
 }
 
 // RemovePeer removes a peer from the authorized list and tears down its session.
