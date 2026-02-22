@@ -99,12 +99,9 @@ handler, _ := wgnet.NewHandler(wgnet.Config{
             if !isAllowed(pk) {
                 return
             }
-            result, err := handler.AcceptUnknownPeer(pk, pkt, addr)
-            if err != nil {
+            if err := handler.AcceptUnknownPeer(pk, pkt, addr, conn); err != nil {
                 log.Println("accept peer:", err)
-                return
             }
-            conn.WriteToUDP(result.Response, addr)
         }()
     },
 })

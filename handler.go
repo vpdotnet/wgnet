@@ -183,13 +183,17 @@ func (h *Handler) AddPeerWithPSK(peerKey NoisePublicKey, psk NoisePresharedKey) 
 	h.peers[peerKey] = peerInfo
 }
 
-// AcceptUnknownPeer authorizes a previously unknown peer and re-processes its
-// handshake initiation packet. Call this from an OnUnknownPeer callback (or later)
-// after verifying the peer. The caller is responsible for sending result.Response
-// back to remoteAddr.
-func (h *Handler) AcceptUnknownPeer(peerKey NoisePublicKey, initiationPacket []byte, remoteAddr *net.UDPAddr) (*PacketResult, error) {
+// AcceptUnknownPeer authorizes a previously unknown peer, re-processes its
+// handshake initiation packet, and sends the handshake response via conn.
+// Call this from an OnUnknownPeer callback (or later) after verifying the peer.
+func (h *Handler) AcceptUnknownPeer(peerKey NoisePublicKey, initiationPacket []byte, remoteAddr *net.UDPAddr, conn net.PacketConn) error {
 	h.AddPeer(peerKey)
-	return h.processHandshakeInitiation(initiationPacket, remoteAddr)
+	result, err := h.processHandshakeInitiation(initiationPacket, remoteAddr)
+	if err != nil {
+		return err
+	}
+	_, err = conn.WriteTo(result.Response, remoteAddr)
+	return err
 }
 
 // RemovePeer removes a peer from the authorized list and tears down its session.

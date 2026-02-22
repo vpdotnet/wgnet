@@ -453,42 +453,17 @@ func TestMultiHandlerEndToEnd(t *testing.T) {
 
 	loopBin := findLoopBinary(t)
 
-	// Channel for async unknown-peer results
-	type asyncResult struct {
-		result *PacketResult
-		addr   net.Addr
-	}
-	asyncCh := make(chan asyncResult, 4)
-
-	// Create two server identities with async unknown-peer callbacks
-	makeCallback := func(h *Handler) UnknownPeerFunc {
-		return func(pk NoisePublicKey, addr *net.UDPAddr, packet []byte) {
-			pkt := make([]byte, len(packet))
-			copy(pkt, packet)
-			go func() {
-				res, err := h.AcceptUnknownPeer(pk, pkt, addr)
-				if err != nil {
-					t.Logf("AcceptUnknownPeer error: %v", err)
-					return
-				}
-				asyncCh <- asyncResult{result: res, addr: addr}
-			}()
-		}
-	}
-
 	h1, err := NewHandler(Config{})
 	if err != nil {
 		t.Fatalf("create handler 1: %v", err)
 	}
 	defer h1.Close()
-	h1.onUnknownPeer = makeCallback(h1)
 
 	h2, err := NewHandler(Config{})
 	if err != nil {
 		t.Fatalf("create handler 2: %v", err)
 	}
 	defer h2.Close()
-	h2.onUnknownPeer = makeCallback(h2)
 
 	mh, err := NewMultiHandler(h1, h2)
 	if err != nil {
@@ -503,6 +478,21 @@ func TestMultiHandlerEndToEnd(t *testing.T) {
 	}
 	defer udpConn.Close()
 	ourAddr := udpConn.LocalAddr().(*net.UDPAddr)
+
+	// Set up async unknown-peer callbacks (needs udpConn)
+	makeCallback := func(h *Handler) UnknownPeerFunc {
+		return func(pk NoisePublicKey, addr *net.UDPAddr, packet []byte) {
+			pkt := make([]byte, len(packet))
+			copy(pkt, packet)
+			go func() {
+				if err := h.AcceptUnknownPeer(pk, pkt, addr, udpConn); err != nil {
+					t.Logf("AcceptUnknownPeer error: %v", err)
+				}
+			}()
+		}
+	}
+	h1.onUnknownPeer = makeCallback(h1)
+	h2.onUnknownPeer = makeCallback(h2)
 
 	// Start two wireguard-loop-go instances, each targeting a different identity
 	type loopInstance struct {
@@ -561,31 +551,12 @@ func TestMultiHandlerEndToEnd(t *testing.T) {
 		t.Logf("loop instance %d configured (targeting handler %x...)", i, serverPub[:4])
 	}
 
-	// sendResponse sends async unknown-peer handshake responses
-	sendAsyncResponses := func() {
-		for {
-			select {
-			case ar := <-asyncCh:
-				if ar.result != nil && ar.result.Response != nil {
-					if _, err := udpConn.WriteTo(ar.result.Response, ar.addr); err != nil {
-						t.Logf("send async response: %v", err)
-					}
-				}
-			default:
-				return
-			}
-		}
-	}
-
 	// Process handshakes and data from both instances
 	handshakesDone := map[int]bool{}
 	dataDone := map[int]bool{}
 	buf := make([]byte, 2048)
 
 	for len(handshakesDone) < 2 || len(dataDone) < 2 {
-		// Drain any async handshake responses
-		sendAsyncResponses()
-
 		udpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		n, remoteAddr, err := udpConn.ReadFrom(buf)
 		if err != nil {
@@ -595,9 +566,6 @@ func TestMultiHandlerEndToEnd(t *testing.T) {
 		result, err := mh.ProcessPacket(buf[:n], remoteAddr.(*net.UDPAddr))
 		if err != nil {
 			t.Logf("process error (may be expected during negotiation): %v", err)
-			// Drain async responses that may have been triggered by the callback
-			time.Sleep(10 * time.Millisecond)
-			sendAsyncResponses()
 			continue
 		}
 
