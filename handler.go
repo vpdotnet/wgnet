@@ -27,6 +27,10 @@ type Config struct {
 	// PrivateKey is the local static private key. If zero, a new key is generated.
 	PrivateKey NoisePrivateKey
 
+	// Conn is the UDP connection used for sending packets (e.g. handshake
+	// responses from AcceptUnknownPeer). Required if OnUnknownPeer is set.
+	Conn net.PacketConn
+
 	// OnUnknownPeer is called when a handshake arrives from an unauthorized peer.
 	// If nil, unknown peers are rejected.
 	OnUnknownPeer UnknownPeerFunc
@@ -66,6 +70,7 @@ type PacketResult struct {
 type Handler struct {
 	privateKey      NoisePrivateKey
 	publicKey       NoisePublicKey
+	conn            net.PacketConn
 	onUnknownPeer   UnknownPeerFunc
 	cookieChecker   CookieChecker
 	cookieGenerator CookieGenerator
@@ -127,6 +132,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h := &Handler{
 		privateKey:    privKey,
 		publicKey:     pubKey,
+		conn:          cfg.Conn,
 		onUnknownPeer: cfg.OnUnknownPeer,
 		handshakes:    make(map[uint32]*Handshake),
 		keypairs:      make(map[uint32]*Keypair),
@@ -184,15 +190,19 @@ func (h *Handler) AddPeerWithPSK(peerKey NoisePublicKey, psk NoisePresharedKey) 
 }
 
 // AcceptUnknownPeer authorizes a previously unknown peer, re-processes its
-// handshake initiation packet, and sends the handshake response via conn.
-// Call this from an OnUnknownPeer callback (or later) after verifying the peer.
-func (h *Handler) AcceptUnknownPeer(peerKey NoisePublicKey, initiationPacket []byte, remoteAddr *net.UDPAddr, conn net.PacketConn) error {
+// handshake initiation packet, and sends the handshake response via the
+// handler's connection. Call this from an OnUnknownPeer callback (or later)
+// after verifying the peer.
+func (h *Handler) AcceptUnknownPeer(peerKey NoisePublicKey, initiationPacket []byte, remoteAddr *net.UDPAddr) error {
+	if h.conn == nil {
+		return fmt.Errorf("no connection set on handler")
+	}
 	h.AddPeer(peerKey)
 	result, err := h.processHandshakeInitiation(initiationPacket, remoteAddr)
 	if err != nil {
 		return err
 	}
-	_, err = conn.WriteTo(result.Response, remoteAddr)
+	_, err = h.conn.WriteTo(result.Response, remoteAddr)
 	return err
 }
 
