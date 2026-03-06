@@ -14,13 +14,13 @@ import (
 // up the keypair by receiver index, checks for replay, and decrypts the payload.
 // Empty payloads are returned as PacketKeepalive.
 func (h *Handler) processDataPacket(data []byte) (*PacketResult, error) {
-	if len(data) < MessageTransportHeaderSize {
+	if len(data) < messageTransportHeaderSize {
 		return nil, fmt.Errorf("data packet too short: %d", len(data))
 	}
 
 	msgType := binary_le_uint32(data[0:4])
-	if msgType != MessageTransportType {
-		return nil, fmt.Errorf("invalid message type: %d (expected %d)", msgType, MessageTransportType)
+	if msgType != messageTransportType {
+		return nil, fmt.Errorf("invalid message type: %d (expected %d)", msgType, messageTransportType)
 	}
 
 	receiverIdx := binary_le_uint32(data[4:8])
@@ -28,7 +28,7 @@ func (h *Handler) processDataPacket(data []byte) (*PacketResult, error) {
 
 	// Find keypair
 	h.keypairsMutex.RLock()
-	keypair, exists := h.keypairs[receiverIdx]
+	kp, exists := h.keypairs[receiverIdx]
 	h.keypairsMutex.RUnlock()
 
 	if !exists {
@@ -40,13 +40,13 @@ func (h *Handler) processDataPacket(data []byte) (*PacketResult, error) {
 	binary_le_put_uint64(nonce[4:], counter)
 
 	// Check for replay
-	if keypair.replayFilter.CheckReplay(counter) {
+	if kp.replayFilter.CheckReplay(counter) {
 		return nil, fmt.Errorf("replay detected for counter: %d", counter)
 	}
 
 	// Decrypt in-place
 	ciphertext := data[16:]
-	plaintext, err := keypair.receive.Open(ciphertext[:0], nonce[:], ciphertext, nil)
+	plaintext, err := kp.receive.Open(ciphertext[:0], nonce[:], ciphertext, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt failed: %w", err)
 	}
@@ -54,11 +54,11 @@ func (h *Handler) processDataPacket(data []byte) (*PacketResult, error) {
 	// Find peer key for this keypair by looking up sessions
 	var peerKey NoisePublicKey
 	h.sessionsMutex.RLock()
-	for pk, session := range h.sessions {
-		session.mutex.RLock()
-		match := (session.keypairCurrent != nil && session.keypairCurrent.localIndex == receiverIdx) ||
-			(session.keypairPrev != nil && session.keypairPrev.localIndex == receiverIdx)
-		session.mutex.RUnlock()
+	for pk, sess := range h.sessions {
+		sess.mutex.RLock()
+		match := (sess.keypairCurrent != nil && sess.keypairCurrent.localIndex == receiverIdx) ||
+			(sess.keypairPrev != nil && sess.keypairPrev.localIndex == receiverIdx)
+		sess.mutex.RUnlock()
 		if match {
 			peerKey = pk
 			break
@@ -68,10 +68,10 @@ func (h *Handler) processDataPacket(data []byte) (*PacketResult, error) {
 
 	// Update session last received time
 	h.sessionsMutex.RLock()
-	if session, exists := h.sessions[peerKey]; exists {
-		session.mutex.Lock()
-		session.lastReceived = now()
-		session.mutex.Unlock()
+	if sess, exists := h.sessions[peerKey]; exists {
+		sess.mutex.Lock()
+		sess.lastReceived = now()
+		sess.mutex.Unlock()
 	}
 	h.sessionsMutex.RUnlock()
 
@@ -92,7 +92,7 @@ func (h *Handler) processDataPacket(data []byte) (*PacketResult, error) {
 func (h *Handler) encryptDataPacket(data []byte, peerKey NoisePublicKey) ([]byte, error) {
 	// Find session
 	h.sessionsMutex.RLock()
-	session, exists := h.sessions[peerKey]
+	sess, exists := h.sessions[peerKey]
 	if !exists {
 		h.sessionsMutex.RUnlock()
 		return nil, fmt.Errorf("no session for peer")
@@ -100,15 +100,15 @@ func (h *Handler) encryptDataPacket(data []byte, peerKey NoisePublicKey) ([]byte
 	h.sessionsMutex.RUnlock()
 
 	// Get current keypair
-	session.mutex.Lock()
-	keypair := session.keypairCurrent
-	if keypair == nil {
-		session.mutex.Unlock()
+	sess.mutex.Lock()
+	kp := sess.keypairCurrent
+	if kp == nil {
+		sess.mutex.Unlock()
 		return nil, fmt.Errorf("no current keypair for peer")
 	}
-	remoteIndex := keypair.remoteIndex
-	session.lastSent = now()
-	session.mutex.Unlock()
+	remoteIndex := kp.remoteIndex
+	sess.lastSent = now()
+	sess.mutex.Unlock()
 
 	// Increment counter
 	h.countersMutex.Lock()
@@ -122,14 +122,14 @@ func (h *Handler) encryptDataPacket(data []byte, peerKey NoisePublicKey) ([]byte
 	binary_le_put_uint64(nonce[4:], counter)
 
 	// Encrypt
-	ciphertext := keypair.send.Seal(nil, nonce[:], data, nil)
+	ciphertext := kp.send.Seal(nil, nonce[:], data, nil)
 
 	// Build packet
-	result := make([]byte, MessageTransportHeaderSize+len(ciphertext))
-	binary_le_put_uint32(result[0:4], MessageTransportType)
+	result := make([]byte, messageTransportHeaderSize+len(ciphertext))
+	binary_le_put_uint32(result[0:4], messageTransportType)
 	binary_le_put_uint32(result[4:8], remoteIndex)
 	binary_le_put_uint64(result[8:16], counter)
-	copy(result[MessageTransportHeaderSize:], ciphertext)
+	copy(result[messageTransportHeaderSize:], ciphertext)
 
 	return result, nil
 }

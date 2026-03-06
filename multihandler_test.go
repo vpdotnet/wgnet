@@ -92,8 +92,8 @@ func buildHandshakeInitiation(t *testing.T, server *Handler) ([]byte, NoisePriva
 	// Build the wire-format message
 	var senderIdx uint32 = 42
 
-	pkt := make([]byte, MessageInitiationSize)
-	binary_le_put_uint32(pkt[0:4], MessageInitiationType)
+	pkt := make([]byte, messageInitiationSize)
+	binary_le_put_uint32(pkt[0:4], messageInitiationType)
 	binary_le_put_uint32(pkt[4:8], senderIdx)
 	copy(pkt[8:40], ephPub[:])
 	copy(pkt[40:88], staticField[:])
@@ -195,14 +195,14 @@ func TestMultiHandlerTransportRouting(t *testing.T) {
 
 	// Find h1's keypair to get the AEAD ciphers (same package = internal access)
 	h1.keypairsMutex.RLock()
-	var serverKeypair *Keypair
+	var serverKP *keypair
 	for _, kp := range h1.keypairs {
-		serverKeypair = kp
+		serverKP = kp
 		break
 	}
 	h1.keypairsMutex.RUnlock()
 
-	if serverKeypair == nil {
+	if serverKP == nil {
 		t.Fatal("server has no keypair after handshake")
 	}
 
@@ -213,12 +213,12 @@ func TestMultiHandlerTransportRouting(t *testing.T) {
 	var counter uint64 = 1
 	var nonce [12]byte
 	binary_le_put_uint64(nonce[4:], counter)
-	ciphertext := serverKeypair.receive.Seal(nil, nonce[:], testData, nil)
+	ciphertext := serverKP.receive.Seal(nil, nonce[:], testData, nil)
 
 	// Build transport packet: [type:4][receiver:4][counter:8][ciphertext]
 	transportPkt := make([]byte, 16+len(ciphertext))
-	binary_le_put_uint32(transportPkt[0:4], MessageTransportType)
-	binary_le_put_uint32(transportPkt[4:8], serverKeypair.localIndex)
+	binary_le_put_uint32(transportPkt[0:4], messageTransportType)
+	binary_le_put_uint32(transportPkt[4:8], serverKP.localIndex)
 	binary_le_put_uint64(transportPkt[8:16], counter)
 	copy(transportPkt[16:], ciphertext)
 
@@ -422,11 +422,11 @@ func TestMultiHandlerMaintenance(t *testing.T) {
 	// Inject stale handshakes into both handlers.
 	staleTime := time.Now().Add(-(RejectAfterTime + time.Minute))
 	h1.handshakesMutex.Lock()
-	h1.handshakes[111] = &Handshake{localIndex: 111, created: staleTime}
+	h1.handshakes[111] = &handshake{localIndex: 111, created: staleTime}
 	h1.handshakesMutex.Unlock()
 
 	h2.handshakesMutex.Lock()
-	h2.handshakes[222] = &Handshake{localIndex: 222, created: staleTime}
+	h2.handshakes[222] = &handshake{localIndex: 222, created: staleTime}
 	h2.handshakesMutex.Unlock()
 
 	// Run Maintenance on the MultiHandler.

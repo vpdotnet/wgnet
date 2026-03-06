@@ -3,7 +3,7 @@ package wgnet
 import "testing"
 
 func TestSlidingWindowBasic(t *testing.T) {
-	var sw SlidingWindow
+	var sw slidingWindow
 
 	// Sequential counters should all pass.
 	for i := uint64(0); i < 100; i++ {
@@ -14,7 +14,7 @@ func TestSlidingWindowBasic(t *testing.T) {
 }
 
 func TestSlidingWindowReplay(t *testing.T) {
-	var sw SlidingWindow
+	var sw slidingWindow
 
 	// First use should pass.
 	if sw.CheckReplay(42) {
@@ -28,7 +28,7 @@ func TestSlidingWindowReplay(t *testing.T) {
 }
 
 func TestSlidingWindowOld(t *testing.T) {
-	var sw SlidingWindow
+	var sw slidingWindow
 
 	// Advance the window by using a high counter.
 	if sw.CheckReplay(WindowSize + 100) {
@@ -42,7 +42,7 @@ func TestSlidingWindowOld(t *testing.T) {
 }
 
 func TestSlidingWindowAdvance(t *testing.T) {
-	var sw SlidingWindow
+	var sw slidingWindow
 
 	// Use counters 0-9.
 	for i := uint64(0); i < 10; i++ {
@@ -72,7 +72,7 @@ func TestSlidingWindowAdvance(t *testing.T) {
 }
 
 func TestSlidingWindowOutOfOrder(t *testing.T) {
-	var sw SlidingWindow
+	var sw slidingWindow
 
 	// Use counter 200 first. This sets position = 200 - (200%64) = 192.
 	if sw.CheckReplay(200) {
@@ -101,7 +101,7 @@ func TestSlidingWindowOutOfOrder(t *testing.T) {
 }
 
 func TestSlidingWindowLargeJump(t *testing.T) {
-	var sw SlidingWindow
+	var sw slidingWindow
 
 	// Use some initial counters.
 	for i := uint64(0); i < 5; i++ {
@@ -126,7 +126,7 @@ func TestSlidingWindowLargeJump(t *testing.T) {
 }
 
 func TestSlidingWindowReset(t *testing.T) {
-	var sw SlidingWindow
+	var sw slidingWindow
 
 	sw.CheckReplay(42)
 	sw.Reset()

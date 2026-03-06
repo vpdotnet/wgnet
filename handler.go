@@ -17,9 +17,9 @@ import (
 // The packet slice is only valid for the duration of the call — the callback
 // must copy it before returning if it needs to keep the data (e.g. to pass to
 // AcceptUnknownPeer asynchronously). To accept the peer, call
-// Handler.AcceptUnknownPeer with the peer key and packet to resume the
-// handshake. The caller is responsible for sending the resulting response
-// bytes back to remoteAddr.
+// Handler.AcceptUnknownPeer with the peer key, copied packet, and remote
+// address; it re-processes the handshake and sends the response via the
+// handler's Conn.
 type UnknownPeerFunc func(publicKey NoisePublicKey, remoteAddr *net.UDPAddr, packet []byte)
 
 // Config configures a Handler.
@@ -27,8 +27,8 @@ type Config struct {
 	// PrivateKey is the local static private key. If zero, a new key is generated.
 	PrivateKey NoisePrivateKey
 
-	// Conn is the UDP connection used for sending packets (e.g. handshake
-	// responses from AcceptUnknownPeer). Required if OnUnknownPeer is set.
+	// Conn is the UDP connection used for sending handshake responses when
+	// AcceptUnknownPeer is called. Required if OnUnknownPeer is set.
 	Conn net.PacketConn
 
 	// OnUnknownPeer is called when a handshake arrives from an unauthorized peer.
@@ -50,6 +50,9 @@ const (
 	PacketTransportData
 	// PacketKeepalive indicates a keepalive (empty transport data).
 	PacketKeepalive
+	// PacketCookieReceived indicates a cookie reply was received and stored
+	// internally. No action is required; retry the handshake initiation.
+	PacketCookieReceived
 )
 
 // PacketResult is the result of processing an incoming packet.
@@ -64,6 +67,26 @@ type PacketResult struct {
 	PeerKey NoisePublicKey
 }
 
+// PeerInfo contains information about an authorized peer.
+type PeerInfo struct {
+	PublicKey     NoisePublicKey
+	HasPSK       bool
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	LastHandshake time.Time
+}
+
+// peerEntry is the internal per-peer state.
+type peerEntry struct {
+	PublicKey     NoisePublicKey
+	PresharedKey  NoisePresharedKey
+	HasPSK        bool
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+	LastHandshake time.Time
+	cookieGen     cookieGenerator
+}
+
 // Handler implements the WireGuard protocol, supporting both initiator and
 // responder roles. Use InitiateHandshake to start a connection, or pass
 // incoming packets to ProcessPacket to respond to them.
@@ -72,8 +95,8 @@ type Handler struct {
 	publicKey       NoisePublicKey
 	conn            net.PacketConn
 	onUnknownPeer   UnknownPeerFunc
-	cookieChecker   CookieChecker
-	cookieGenerator CookieGenerator
+	cookieChecker   cookieChecker
+	cookieGenerator cookieGenerator
 
 	// DoS mitigation
 	underLoad        bool
@@ -82,11 +105,11 @@ type Handler struct {
 	handshakeMutex   sync.RWMutex
 
 	// Handshake tracking
-	handshakes      map[uint32]*Handshake
+	handshakes      map[uint32]*handshake
 	handshakesMutex sync.RWMutex
 
 	// Keypair tracking
-	keypairs      map[uint32]*Keypair
+	keypairs      map[uint32]*keypair
 	keypairsMutex sync.RWMutex
 
 	// Per-peer send counters
@@ -94,26 +117,15 @@ type Handler struct {
 	countersMutex sync.RWMutex
 
 	// Sessions by peer public key
-	sessions      map[NoisePublicKey]*Session
+	sessions      map[NoisePublicKey]*session
 	sessionsMutex sync.RWMutex
 
 	// Peer authorization
-	peers      map[NoisePublicKey]*PeerInfo
+	peers      map[NoisePublicKey]*peerEntry
 	peersMutex sync.RWMutex
 
 	// Buffer pools
 	packetPool *sync.Pool
-}
-
-// PeerInfo contains information about an authorized peer.
-type PeerInfo struct {
-	PublicKey     NoisePublicKey
-	PresharedKey  NoisePresharedKey
-	HasPSK        bool
-	CreatedAt     time.Time
-	ExpiresAt     time.Time
-	LastHandshake time.Time
-	cookieGen     CookieGenerator
 }
 
 // NewHandler creates a new WireGuard protocol handler.
@@ -134,11 +146,11 @@ func NewHandler(cfg Config) (*Handler, error) {
 		publicKey:     pubKey,
 		conn:          cfg.Conn,
 		onUnknownPeer: cfg.OnUnknownPeer,
-		handshakes:    make(map[uint32]*Handshake),
-		keypairs:      make(map[uint32]*Keypair),
-		sessions:      make(map[NoisePublicKey]*Session),
+		handshakes:    make(map[uint32]*handshake),
+		keypairs:      make(map[uint32]*keypair),
+		sessions:      make(map[NoisePublicKey]*session),
 		peerCounters:  make(map[NoisePublicKey]uint64),
-		peers:         make(map[NoisePublicKey]*PeerInfo),
+		peers:         make(map[NoisePublicKey]*peerEntry),
 		packetPool: &sync.Pool{
 			New: func() interface{} {
 				return make([]byte, 2048)
@@ -166,12 +178,12 @@ func (h *Handler) AddPeer(peerKey NoisePublicKey) {
 		return
 	}
 
-	peerInfo := &PeerInfo{
+	entry := &peerEntry{
 		PublicKey: peerKey,
 		CreatedAt: now(),
 	}
-	peerInfo.cookieGen.Init(peerKey)
-	h.peers[peerKey] = peerInfo
+	entry.cookieGen.Init(peerKey)
+	h.peers[peerKey] = entry
 }
 
 // AddPeerWithPSK authorizes a peer with a preshared key.
@@ -179,14 +191,14 @@ func (h *Handler) AddPeerWithPSK(peerKey NoisePublicKey, psk NoisePresharedKey) 
 	h.peersMutex.Lock()
 	defer h.peersMutex.Unlock()
 
-	peerInfo := &PeerInfo{
+	entry := &peerEntry{
 		PublicKey:    peerKey,
 		PresharedKey: psk,
 		HasPSK:       true,
 		CreatedAt:    now(),
 	}
-	peerInfo.cookieGen.Init(peerKey)
-	h.peers[peerKey] = peerInfo
+	entry.cookieGen.Init(peerKey)
+	h.peers[peerKey] = entry
 }
 
 // AcceptUnknownPeer authorizes a previously unknown peer, re-processes its
@@ -214,24 +226,24 @@ func (h *Handler) RemovePeer(peerKey NoisePublicKey) {
 
 	// Also clean up session
 	h.sessionsMutex.Lock()
-	if session, exists := h.sessions[peerKey]; exists {
-		session.mutex.Lock()
-		if session.keypairCurrent != nil {
+	if sess, exists := h.sessions[peerKey]; exists {
+		sess.mutex.Lock()
+		if sess.keypairCurrent != nil {
 			h.keypairsMutex.Lock()
-			delete(h.keypairs, session.keypairCurrent.localIndex)
+			delete(h.keypairs, sess.keypairCurrent.localIndex)
 			h.keypairsMutex.Unlock()
 		}
-		if session.keypairPrev != nil {
+		if sess.keypairPrev != nil {
 			h.keypairsMutex.Lock()
-			delete(h.keypairs, session.keypairPrev.localIndex)
+			delete(h.keypairs, sess.keypairPrev.localIndex)
 			h.keypairsMutex.Unlock()
 		}
-		if session.keypairNext != nil {
+		if sess.keypairNext != nil {
 			h.keypairsMutex.Lock()
-			delete(h.keypairs, session.keypairNext.localIndex)
+			delete(h.keypairs, sess.keypairNext.localIndex)
 			h.keypairsMutex.Unlock()
 		}
-		session.mutex.Unlock()
+		sess.mutex.Unlock()
 		delete(h.sessions, peerKey)
 	}
 	h.sessionsMutex.Unlock()
@@ -241,28 +253,48 @@ func (h *Handler) RemovePeer(peerKey NoisePublicKey) {
 // Returns false if the peer is unknown or has passed its ExpiresAt time.
 func (h *Handler) IsAuthorizedPeer(peerKey NoisePublicKey) bool {
 	h.peersMutex.RLock()
-	info, exists := h.peers[peerKey]
-	h.peersMutex.RUnlock()
+	defer h.peersMutex.RUnlock()
 
+	entry, exists := h.peers[peerKey]
 	if !exists {
 		return false
 	}
 
-	if !info.ExpiresAt.IsZero() && now().After(info.ExpiresAt) {
+	if !entry.ExpiresAt.IsZero() && now().After(entry.ExpiresAt) {
 		return false
 	}
 
 	return true
 }
 
+// GetPeerInfo returns information about an authorized peer.
+// Returns false if the peer is not found.
+func (h *Handler) GetPeerInfo(peerKey NoisePublicKey) (PeerInfo, bool) {
+	h.peersMutex.RLock()
+	defer h.peersMutex.RUnlock()
+
+	entry, exists := h.peers[peerKey]
+	if !exists {
+		return PeerInfo{}, false
+	}
+
+	return PeerInfo{
+		PublicKey:     entry.PublicKey,
+		HasPSK:        entry.HasPSK,
+		CreatedAt:     entry.CreatedAt,
+		ExpiresAt:     entry.ExpiresAt,
+		LastHandshake: entry.LastHandshake,
+	}, true
+}
+
 // getPresharedKey returns the preshared key for a peer, or zero if none.
 func (h *Handler) getPresharedKey(peerKey NoisePublicKey) NoisePresharedKey {
 	h.peersMutex.RLock()
-	info, exists := h.peers[peerKey]
-	h.peersMutex.RUnlock()
+	defer h.peersMutex.RUnlock()
 
-	if exists && info.HasPSK {
-		return info.PresharedKey
+	entry, exists := h.peers[peerKey]
+	if exists && entry.HasPSK {
+		return entry.PresharedKey
 	}
 	return NoisePresharedKey{}
 }
@@ -270,8 +302,7 @@ func (h *Handler) getPresharedKey(peerKey NoisePublicKey) NoisePresharedKey {
 // ProcessPacket processes an incoming WireGuard packet and returns the result.
 // It dispatches by message type: initiation (1), response (2), cookie reply (3),
 // and transport data (4). The caller is responsible for sending any Response
-// bytes back to remoteAddr. Returns nil, nil for cookie replies (the cookie is
-// stored internally for the next initiation attempt).
+// bytes back to remoteAddr.
 func (h *Handler) ProcessPacket(data []byte, remoteAddr *net.UDPAddr) (*PacketResult, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("packet too short: %d bytes", len(data))
@@ -280,13 +311,13 @@ func (h *Handler) ProcessPacket(data []byte, remoteAddr *net.UDPAddr) (*PacketRe
 	msgType := binary_le_uint32(data[0:4])
 
 	switch msgType {
-	case MessageInitiationType:
+	case messageInitiationType:
 		return h.processHandshakeInitiation(data, remoteAddr)
-	case MessageResponseType:
+	case messageResponseType:
 		return h.processHandshakeResponse(data)
-	case MessageCookieReplyType:
+	case messageCookieReplyType:
 		return h.processCookieReply(data)
-	case MessageTransportType:
+	case messageTransportType:
 		return h.processDataPacket(data)
 	default:
 		return nil, fmt.Errorf("unknown message type: %d", msgType)
@@ -369,32 +400,32 @@ func (h *Handler) cleanupSessions() {
 	defer h.sessionsMutex.Unlock()
 
 	n := now()
-	for key, session := range h.sessions {
-		session.mutex.RLock()
-		lastActive := session.lastReceived
-		if session.lastSent.After(lastActive) {
-			lastActive = session.lastSent
+	for key, sess := range h.sessions {
+		sess.mutex.RLock()
+		lastActive := sess.lastReceived
+		if sess.lastSent.After(lastActive) {
+			lastActive = sess.lastSent
 		}
-		session.mutex.RUnlock()
+		sess.mutex.RUnlock()
 
 		if n.Sub(lastActive) > RejectAfterTime {
-			session.mutex.Lock()
-			if session.keypairCurrent != nil {
+			sess.mutex.Lock()
+			if sess.keypairCurrent != nil {
 				h.keypairsMutex.Lock()
-				delete(h.keypairs, session.keypairCurrent.localIndex)
+				delete(h.keypairs, sess.keypairCurrent.localIndex)
 				h.keypairsMutex.Unlock()
 			}
-			if session.keypairPrev != nil {
+			if sess.keypairPrev != nil {
 				h.keypairsMutex.Lock()
-				delete(h.keypairs, session.keypairPrev.localIndex)
+				delete(h.keypairs, sess.keypairPrev.localIndex)
 				h.keypairsMutex.Unlock()
 			}
-			if session.keypairNext != nil {
+			if sess.keypairNext != nil {
 				h.keypairsMutex.Lock()
-				delete(h.keypairs, session.keypairNext.localIndex)
+				delete(h.keypairs, sess.keypairNext.localIndex)
 				h.keypairsMutex.Unlock()
 			}
-			session.mutex.Unlock()
+			sess.mutex.Unlock()
 			delete(h.sessions, key)
 		}
 	}
@@ -406,7 +437,7 @@ func (h *Handler) incrementActiveHandshakes() {
 
 	h.activeHandshakes++
 
-	if h.activeHandshakes > DefaultLoadThreshold {
+	if h.activeHandshakes > defaultLoadThreshold {
 		h.loadMutex.Lock()
 		h.underLoad = true
 		h.loadMutex.Unlock()
@@ -421,7 +452,7 @@ func (h *Handler) decrementActiveHandshakes() {
 		h.activeHandshakes--
 	}
 
-	if h.activeHandshakes < DefaultLoadThreshold/2 {
+	if h.activeHandshakes < defaultLoadThreshold/2 {
 		h.loadMutex.Lock()
 		wasLoaded := h.underLoad
 		h.underLoad = false
@@ -458,4 +489,15 @@ func (h *Handler) hasKeypairIndex(idx uint32) bool {
 // cryptoRandRead is a wrapper for testing.
 var cryptoRandRead = func(b []byte) (int, error) {
 	return rand.Read(b)
+}
+
+// SetPeerExpiry sets an expiration time for a peer. After this time, the peer
+// will no longer be authorized for new handshakes.
+func (h *Handler) SetPeerExpiry(peerKey NoisePublicKey, expiresAt time.Time) {
+	h.peersMutex.Lock()
+	defer h.peersMutex.Unlock()
+
+	if entry, exists := h.peers[peerKey]; exists {
+		entry.ExpiresAt = expiresAt
+	}
 }

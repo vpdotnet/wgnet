@@ -45,14 +45,14 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 			}
 
 			if !h.cookieChecker.CheckMAC2(data, ipBytes) {
-				cookieReply, err := h.GenerateCookieReply(remoteAddr.IP, msg.Sender, data[116:132])
+				cookieReply, err := h.generateCookieReply(remoteAddr.IP, msg.Sender, data[116:132])
 				if err != nil {
 					return nil, fmt.Errorf("generate cookie reply: %w", err)
 				}
 				return &PacketResult{Type: PacketCookieReply, Response: cookieReply}, nil
 			}
 		} else {
-			cookieReply, err := h.GenerateCookieReply(remoteAddr.IP, msg.Sender, data[116:132])
+			cookieReply, err := h.generateCookieReply(remoteAddr.IP, msg.Sender, data[116:132])
 			if err != nil {
 				return nil, fmt.Errorf("generate cookie reply: %w", err)
 			}
@@ -64,7 +64,7 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 	serverPublicKey := h.publicKey
 
 	// === Handshake state ===
-	var hs Handshake
+	var hs handshake
 	hs.chainKey = initialChainKey
 	hs.hash = initialHash
 	hs.remoteIndex = msg.Sender
@@ -127,14 +127,14 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 
 	// Update last handshake time
 	h.peersMutex.Lock()
-	if info, exists := h.peers[hs.remoteStatic]; exists {
-		info.LastHandshake = now()
+	if entry, exists := h.peers[hs.remoteStatic]; exists {
+		entry.LastHandshake = now()
 	}
 	h.peersMutex.Unlock()
 
 	// === Prepare response ===
-	var respMsg MessageResponse
-	respMsg.Type = MessageResponseType
+	var respMsg messageResponse
+	respMsg.Type = messageResponseType
 
 	var senderIdx uint32
 	for senderIdx == 0 {
@@ -231,7 +231,7 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 	var recvKey, sendKey [chacha20poly1305.KeySize]byte
 	kdf2(&recvKey, &sendKey, hs.chainKey[:], nil)
 
-	keypair := &Keypair{
+	kp := &keypair{
 		send:        createAEAD(sendKey),
 		receive:     createAEAD(recvKey),
 		created:     now(),
@@ -239,25 +239,25 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 		remoteIndex: hs.remoteIndex,
 		isInitiator: false,
 	}
-	keypair.replayFilter.Reset()
+	kp.replayFilter.Reset()
 
 	h.keypairsMutex.Lock()
-	h.keypairs[hs.localIndex] = keypair
+	h.keypairs[hs.localIndex] = kp
 	h.keypairsMutex.Unlock()
 
 	// === Update session ===
 	h.sessionsMutex.Lock()
-	if session, exists := h.sessions[hs.remoteStatic]; exists {
-		session.mutex.Lock()
-		if session.keypairCurrent != nil {
-			session.keypairPrev = session.keypairCurrent
+	if sess, exists := h.sessions[hs.remoteStatic]; exists {
+		sess.mutex.Lock()
+		if sess.keypairCurrent != nil {
+			sess.keypairPrev = sess.keypairCurrent
 		}
-		session.keypairCurrent = keypair
-		session.mutex.Unlock()
+		sess.keypairCurrent = kp
+		sess.mutex.Unlock()
 	} else {
-		h.sessions[hs.remoteStatic] = &Session{
+		h.sessions[hs.remoteStatic] = &session{
 			peerKey:        hs.remoteStatic,
-			keypairCurrent: keypair,
+			keypairCurrent: kp,
 			lastReceived:   now(),
 			lastSent:       now(),
 		}
@@ -270,8 +270,8 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 		return nil, fmt.Errorf("encode response: %w", err)
 	}
 
-	if len(respBytes) != MessageResponseSize {
-		return nil, fmt.Errorf("invalid response size: %d (expected %d)", len(respBytes), MessageResponseSize)
+	if len(respBytes) != messageResponseSize {
+		return nil, fmt.Errorf("invalid response size: %d (expected %d)", len(respBytes), messageResponseSize)
 	}
 
 	return &PacketResult{
@@ -282,12 +282,12 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 }
 
 // decodeMessageInitiation deserializes a handshake initiation message.
-func decodeMessageInitiation(data []byte) (*MessageInitiation, error) {
-	if len(data) < MessageInitiationSize {
-		return nil, fmt.Errorf("message too short: %d (expected %d)", len(data), MessageInitiationSize)
+func decodeMessageInitiation(data []byte) (*messageInitiation, error) {
+	if len(data) < messageInitiationSize {
+		return nil, fmt.Errorf("message too short: %d (expected %d)", len(data), messageInitiationSize)
 	}
 
-	var msg MessageInitiation
+	var msg messageInitiation
 	reader := bytes.NewReader(data)
 	if err := binary.Read(reader, binary.LittleEndian, &msg); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -297,7 +297,7 @@ func decodeMessageInitiation(data []byte) (*MessageInitiation, error) {
 }
 
 // encodeMessageResponse serializes a handshake response message.
-func encodeMessageResponse(msg *MessageResponse) ([]byte, error) {
+func encodeMessageResponse(msg *messageResponse) ([]byte, error) {
 	buf := bytes.Buffer{}
 	if err := binary.Write(&buf, binary.LittleEndian, msg); err != nil {
 		return nil, fmt.Errorf("encode: %w", err)
@@ -311,14 +311,14 @@ func (h *Handler) HasSession(peerKey NoisePublicKey) bool {
 	h.sessionsMutex.RLock()
 	defer h.sessionsMutex.RUnlock()
 
-	session, exists := h.sessions[peerKey]
+	sess, exists := h.sessions[peerKey]
 	if !exists {
 		return false
 	}
 
-	session.mutex.RLock()
-	defer session.mutex.RUnlock()
-	return session.keypairCurrent != nil
+	sess.mutex.RLock()
+	defer sess.mutex.RUnlock()
+	return sess.keypairCurrent != nil
 }
 
 // SessionInfo returns timing information about a peer's session.
@@ -327,15 +327,15 @@ func (h *Handler) SessionInfo(peerKey NoisePublicKey) (lastReceived, lastSent ti
 	h.sessionsMutex.RLock()
 	defer h.sessionsMutex.RUnlock()
 
-	session, exists := h.sessions[peerKey]
+	sess, exists := h.sessions[peerKey]
 	if !exists {
 		return
 	}
 
-	session.mutex.RLock()
-	defer session.mutex.RUnlock()
+	sess.mutex.RLock()
+	defer sess.mutex.RUnlock()
 
-	return session.lastReceived, session.lastSent, true
+	return sess.lastReceived, sess.lastSent, true
 }
 
 // Peers returns the list of authorized peer public keys.
@@ -350,17 +350,6 @@ func (h *Handler) Peers() []NoisePublicKey {
 	return keys
 }
 
-// SetPeerExpiry sets an expiration time for a peer. After this time, the peer
-// will no longer be authorized for new handshakes.
-func (h *Handler) SetPeerExpiry(peerKey NoisePublicKey, expiresAt time.Time) {
-	h.peersMutex.RLock()
-	defer h.peersMutex.RUnlock()
-
-	if info, exists := h.peers[peerKey]; exists {
-		info.ExpiresAt = expiresAt
-	}
-}
-
 // InitiateHandshake creates a handshake initiation packet for the given peer.
 // The peer must already be authorized via AddPeer or AddPeerWithPSK.
 // Returns a 148-byte packet ready to send.
@@ -373,7 +362,7 @@ func (h *Handler) InitiateHandshake(peerKey NoisePublicKey) ([]byte, error) {
 	clientPublicKey := h.publicKey
 
 	// === Noise IK initiator ===
-	var hs Handshake
+	var hs handshake
 	hs.chainKey = initialChainKey
 	hs.hash = initialHash
 	hs.remoteStatic = peerKey
@@ -442,8 +431,8 @@ func (h *Handler) InitiateHandshake(peerKey NoisePublicKey) ([]byte, error) {
 	hs.created = now()
 
 	// Build wire-format packet
-	pkt := make([]byte, MessageInitiationSize)
-	binary_le_put_uint32(pkt[0:4], MessageInitiationType)
+	pkt := make([]byte, messageInitiationSize)
+	binary_le_put_uint32(pkt[0:4], messageInitiationType)
 	binary_le_put_uint32(pkt[4:8], senderIdx)
 	copy(pkt[8:40], ephPub[:])
 	copy(pkt[40:88], staticField[:])
@@ -451,12 +440,12 @@ func (h *Handler) InitiateHandshake(peerKey NoisePublicKey) ([]byte, error) {
 
 	// Add MACs using the per-peer cookie generator
 	h.peersMutex.RLock()
-	peerInfo, peerExists := h.peers[peerKey]
+	entry, peerExists := h.peers[peerKey]
 	h.peersMutex.RUnlock()
 	if !peerExists {
 		return nil, fmt.Errorf("peer removed during handshake initiation")
 	}
-	peerInfo.cookieGen.AddMacs(pkt)
+	entry.cookieGen.AddMacs(pkt)
 
 	// Store handshake state
 	h.handshakesMutex.Lock()
@@ -534,7 +523,7 @@ func (h *Handler) processHandshakeResponse(data []byte) (*PacketResult, error) {
 	var sendKey, recvKey [chacha20poly1305.KeySize]byte
 	kdf2(&sendKey, &recvKey, chainKey[:], nil)
 
-	keypair := &Keypair{
+	kp := &keypair{
 		send:        createAEAD(sendKey),
 		receive:     createAEAD(recvKey),
 		created:     now(),
@@ -542,26 +531,26 @@ func (h *Handler) processHandshakeResponse(data []byte) (*PacketResult, error) {
 		remoteIndex: msg.Sender,
 		isInitiator: true,
 	}
-	keypair.replayFilter.Reset()
+	kp.replayFilter.Reset()
 
 	h.keypairsMutex.Lock()
-	h.keypairs[hs.localIndex] = keypair
+	h.keypairs[hs.localIndex] = kp
 	h.keypairsMutex.Unlock()
 
 	// Update session
 	peerKey := hs.remoteStatic
 	h.sessionsMutex.Lock()
-	if session, exists := h.sessions[peerKey]; exists {
-		session.mutex.Lock()
-		if session.keypairCurrent != nil {
-			session.keypairPrev = session.keypairCurrent
+	if sess, exists := h.sessions[peerKey]; exists {
+		sess.mutex.Lock()
+		if sess.keypairCurrent != nil {
+			sess.keypairPrev = sess.keypairCurrent
 		}
-		session.keypairCurrent = keypair
-		session.mutex.Unlock()
+		sess.keypairCurrent = kp
+		sess.mutex.Unlock()
 	} else {
-		h.sessions[peerKey] = &Session{
+		h.sessions[peerKey] = &session{
 			peerKey:        peerKey,
-			keypairCurrent: keypair,
+			keypairCurrent: kp,
 			lastReceived:   now(),
 			lastSent:       now(),
 		}
@@ -575,28 +564,28 @@ func (h *Handler) processHandshakeResponse(data []byte) (*PacketResult, error) {
 
 	// Update last handshake time
 	h.peersMutex.Lock()
-	if info, exists := h.peers[peerKey]; exists {
-		info.LastHandshake = now()
+	if entry, exists := h.peers[peerKey]; exists {
+		entry.LastHandshake = now()
 	}
 	h.peersMutex.Unlock()
 
 	// Generate keepalive — standard WireGuard behavior after receiving response
-	keepalive, err := h.encryptDataPacket([]byte{}, peerKey)
+	keepaliveData, err := h.encryptDataPacket([]byte{}, peerKey)
 	if err != nil {
 		return nil, fmt.Errorf("generate keepalive: %w", err)
 	}
 
 	return &PacketResult{
 		Type:     PacketHandshakeResponse,
-		Response: keepalive,
+		Response: keepaliveData,
 		PeerKey:  peerKey,
 	}, nil
 }
 
 // processCookieReply processes a type-3 cookie reply message.
-// Returns nil, nil — the caller should retry the initiation (the cookie will be used via MAC2).
+// The cookie is stored internally; the caller should retry the handshake initiation.
 func (h *Handler) processCookieReply(data []byte) (*PacketResult, error) {
-	if len(data) < MessageCookieReplySize {
+	if len(data) < messageCookieReplySize {
 		return nil, fmt.Errorf("cookie reply too short: %d", len(data))
 	}
 
@@ -612,7 +601,7 @@ func (h *Handler) processCookieReply(data []byte) (*PacketResult, error) {
 
 	// Get peer info for the cookie generator
 	h.peersMutex.RLock()
-	peerInfo, peerExists := h.peers[hs.remoteStatic]
+	entry, peerExists := h.peers[hs.remoteStatic]
 	h.peersMutex.RUnlock()
 	if !peerExists {
 		return nil, fmt.Errorf("no peer info for cookie reply")
@@ -622,33 +611,36 @@ func (h *Handler) processCookieReply(data []byte) (*PacketResult, error) {
 	var nonce [chacha20poly1305.NonceSizeX]byte
 	copy(nonce[:], data[8:32])
 
-	peerInfo.cookieGen.Lock()
-	xaead, err := chacha20poly1305.NewX(peerInfo.cookieGen.mac2.encryptionKey[:])
+	entry.cookieGen.Lock()
+	xaead, err := chacha20poly1305.NewX(entry.cookieGen.mac2.encryptionKey[:])
 	if err != nil {
-		peerInfo.cookieGen.Unlock()
+		entry.cookieGen.Unlock()
 		return nil, fmt.Errorf("create xchacha20: %w", err)
 	}
 
-	cookie, err := xaead.Open(nil, nonce[:], data[32:MessageCookieReplySize], peerInfo.cookieGen.mac2.lastMAC1[:])
+	cookie, err := xaead.Open(nil, nonce[:], data[32:messageCookieReplySize], entry.cookieGen.mac2.lastMAC1[:])
 	if err != nil {
-		peerInfo.cookieGen.Unlock()
+		entry.cookieGen.Unlock()
 		return nil, fmt.Errorf("decrypt cookie: %w", err)
 	}
 
-	copy(peerInfo.cookieGen.mac2.cookie[:], cookie)
-	peerInfo.cookieGen.mac2.cookieSet = now()
-	peerInfo.cookieGen.Unlock()
+	copy(entry.cookieGen.mac2.cookie[:], cookie)
+	entry.cookieGen.mac2.cookieSet = now()
+	entry.cookieGen.Unlock()
 
-	return nil, nil
+	return &PacketResult{
+		Type:    PacketCookieReceived,
+		PeerKey: hs.remoteStatic,
+	}, nil
 }
 
 // decodeMessageResponse deserializes a handshake response message.
-func decodeMessageResponse(data []byte) (*MessageResponse, error) {
-	if len(data) < MessageResponseSize {
-		return nil, fmt.Errorf("message too short: %d (expected %d)", len(data), MessageResponseSize)
+func decodeMessageResponse(data []byte) (*messageResponse, error) {
+	if len(data) < messageResponseSize {
+		return nil, fmt.Errorf("message too short: %d (expected %d)", len(data), messageResponseSize)
 	}
 
-	var msg MessageResponse
+	var msg messageResponse
 	reader := bytes.NewReader(data)
 	if err := binary.Read(reader, binary.LittleEndian, &msg); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -659,9 +651,9 @@ func decodeMessageResponse(data []byte) (*MessageResponse, error) {
 
 func init() {
 	// Verify protocol constant sizes at startup
-	_ = [MessageInitiationSize]byte{}
-	_ = [MessageResponseSize]byte{}
-	_ = [MessageCookieReplySize]byte{}
+	_ = [messageInitiationSize]byte{}
+	_ = [messageResponseSize]byte{}
+	_ = [messageCookieReplySize]byte{}
 
 	slog.Debug("wgnet: protocol constants initialized")
 }

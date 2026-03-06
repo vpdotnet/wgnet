@@ -149,7 +149,10 @@ func (s *Server) PeerAddr(peerKey NoisePublicKey) *net.UDPAddr {
 }
 
 // Close stops the server's read loop and maintenance goroutines. It does
-// not close the net.PacketConn or the handler(s) -- the caller owns those.
+// not close the net.PacketConn or the handler(s) — the caller owns those.
+//
+// Note: Close sets a read deadline on the connection to unblock any pending
+// ReadFrom call. The caller should reset the deadline if reusing the connection.
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
@@ -253,6 +256,8 @@ func (s *Server) processIncoming(data []byte, addr net.Addr) {
 		s.onPacket(result.Data, result.PeerKey, handler)
 	case PacketKeepalive:
 		// Address already updated above.
+	case PacketCookieReceived:
+		// Cookie stored internally; no action needed.
 	}
 }
 

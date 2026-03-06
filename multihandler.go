@@ -119,11 +119,11 @@ func (mh *MultiHandler) ProcessPacket(data []byte, remoteAddr *net.UDPAddr) (*Mu
 	msgType := binary_le_uint32(data[0:4])
 
 	switch msgType {
-	case MessageInitiationType:
+	case messageInitiationType:
 		return mh.routeHandshake(data, remoteAddr)
-	case MessageResponseType, MessageCookieReplyType:
+	case messageResponseType, messageCookieReplyType:
 		return mh.routeByReceiverIndex(data, remoteAddr)
-	case MessageTransportType:
+	case messageTransportType:
 		return mh.routeTransport(data, remoteAddr)
 	default:
 		return nil, fmt.Errorf("unsupported message type for MultiHandler: %d", msgType)
@@ -184,7 +184,7 @@ func (mh *MultiHandler) routeByReceiverIndex(data []byte, remoteAddr *net.UDPAdd
 	// For type-3 (cookie reply): layout is [Type:4][Receiver:4]...
 	msgType := binary_le_uint32(data[0:4])
 	var receiverIdx uint32
-	if msgType == MessageResponseType {
+	if msgType == messageResponseType {
 		if len(data) < 12 {
 			return nil, fmt.Errorf("response packet too short: %d bytes", len(data))
 		}
@@ -201,10 +201,6 @@ func (mh *MultiHandler) routeByReceiverIndex(data []byte, remoteAddr *net.UDPAdd
 			result, err := h.ProcessPacket(data, remoteAddr)
 			if err != nil {
 				return nil, err
-			}
-			// result may be nil (cookie reply returns nil)
-			if result == nil {
-				return nil, nil
 			}
 			return &MultiPacketResult{PacketResult: result, Handler: h}, nil
 		}

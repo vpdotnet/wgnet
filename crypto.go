@@ -30,8 +30,8 @@ func init() {
 	mixHash(&initialHash, &initialChainKey, []byte(wgIdentifier))
 }
 
-// Handshake represents the state of a WireGuard handshake.
-type Handshake struct {
+// handshake represents the state of a WireGuard handshake.
+type handshake struct {
 	state                   handshakeState
 	hash                    [blake2s.Size]byte
 	chainKey                [blake2s.Size]byte
@@ -44,26 +44,26 @@ type Handshake struct {
 	created                 time.Time
 }
 
-// Session represents a peer session with rotating keypairs.
-type Session struct {
-	keypairCurrent *Keypair
-	keypairPrev    *Keypair
-	keypairNext    *Keypair
+// session represents a peer session with rotating keypairs.
+type session struct {
+	keypairCurrent *keypair
+	keypairPrev    *keypair
+	keypairNext    *keypair
 	lastReceived   time.Time
 	lastSent       time.Time
 	peerKey        NoisePublicKey
 	mutex          sync.RWMutex
 }
 
-// Keypair represents a derived keypair for transport data.
-type Keypair struct {
+// keypair represents a derived keypair for transport data.
+type keypair struct {
 	send         aead
 	receive      aead
 	isInitiator  bool
 	created      time.Time
 	localIndex   uint32
 	remoteIndex  uint32
-	replayFilter SlidingWindow
+	replayFilter slidingWindow
 }
 
 // aead is an interface for AEAD ciphers.
@@ -72,8 +72,8 @@ type aead interface {
 	Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error)
 }
 
-// CookieChecker verifies MAC1/MAC2 on incoming messages.
-type CookieChecker struct {
+// cookieChecker verifies MAC1/MAC2 on incoming messages.
+type cookieChecker struct {
 	sync.RWMutex
 	mac1 struct {
 		key [blake2s.Size]byte
@@ -85,8 +85,8 @@ type CookieChecker struct {
 	}
 }
 
-// CookieGenerator creates MAC1/MAC2 for outgoing messages.
-type CookieGenerator struct {
+// cookieGenerator creates MAC1/MAC2 for outgoing messages.
+type cookieGenerator struct {
 	sync.RWMutex
 	mac1 struct {
 		key [blake2s.Size]byte
@@ -100,8 +100,8 @@ type CookieGenerator struct {
 	}
 }
 
-// Init initializes the CookieChecker with the local public key.
-func (cc *CookieChecker) Init(pk NoisePublicKey) {
+// Init initializes the cookieChecker with the local public key.
+func (cc *cookieChecker) Init(pk NoisePublicKey) {
 	cc.Lock()
 	defer cc.Unlock()
 
@@ -119,7 +119,7 @@ func (cc *CookieChecker) Init(pk NoisePublicKey) {
 }
 
 // CheckMAC1 verifies the MAC1 field of a message.
-func (cc *CookieChecker) CheckMAC1(msg []byte) bool {
+func (cc *cookieChecker) CheckMAC1(msg []byte) bool {
 	cc.RLock()
 	defer cc.RUnlock()
 
@@ -146,7 +146,7 @@ func (cc *CookieChecker) CheckMAC1(msg []byte) bool {
 
 // CheckMAC2 verifies the MAC2 field of a message. src is the sender's IP
 // address bytes (4 bytes for IPv4, 16 for IPv6) used to derive the cookie.
-func (cc *CookieChecker) CheckMAC2(msg []byte, src []byte) bool {
+func (cc *cookieChecker) CheckMAC2(msg []byte, src []byte) bool {
 	cc.RLock()
 	defer cc.RUnlock()
 
@@ -173,8 +173,8 @@ func (cc *CookieChecker) CheckMAC2(msg []byte, src []byte) bool {
 	return hmac.Equal(mac2[:], msg[smac2:])
 }
 
-// Init initializes the CookieGenerator with the remote public key.
-func (cg *CookieGenerator) Init(pk NoisePublicKey) {
+// Init initializes the cookieGenerator with the remote public key.
+func (cg *cookieGenerator) Init(pk NoisePublicKey) {
 	cg.Lock()
 	defer cg.Unlock()
 
@@ -193,7 +193,7 @@ func (cg *CookieGenerator) Init(pk NoisePublicKey) {
 // AddMacs computes and writes MAC1 and MAC2 into the last 32 bytes of msg.
 // MAC2 is only set if a valid cookie is available (received via cookie reply);
 // otherwise the MAC2 field is left zeroed.
-func (cg *CookieGenerator) AddMacs(msg []byte) {
+func (cg *cookieGenerator) AddMacs(msg []byte) {
 	size := len(msg)
 
 	smac2 := size - blake2s.Size128
@@ -224,13 +224,13 @@ func (cg *CookieGenerator) AddMacs(msg []byte) {
 	}()
 }
 
-// GenerateCookieReply generates a cookie reply message for DoS mitigation.
+// generateCookieReply generates a cookie reply message for DoS mitigation.
 // receiverIdx is the sender index from the incoming initiation message,
 // used to populate the Receiver field so the initiator can match the reply.
-func (h *Handler) GenerateCookieReply(clientIP net.IP, receiverIdx uint32, initMAC1 []byte) ([]byte, error) {
-	msg := make([]byte, MessageCookieReplySize)
+func (h *Handler) generateCookieReply(clientIP net.IP, receiverIdx uint32, initMAC1 []byte) ([]byte, error) {
+	msg := make([]byte, messageCookieReplySize)
 
-	binary_le_put_uint32(msg[0:4], MessageCookieReplyType)
+	binary_le_put_uint32(msg[0:4], messageCookieReplyType)
 	binary_le_put_uint32(msg[4:8], receiverIdx)
 
 	if _, err := rand.Read(msg[8:32]); err != nil {

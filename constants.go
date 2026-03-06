@@ -9,6 +9,8 @@
 package wgnet
 
 import (
+	"encoding/base64"
+	"fmt"
 	"time"
 
 	"golang.org/x/crypto/blake2s"
@@ -29,57 +31,125 @@ const (
 	tai64nTimestampSize = 12
 
 	// Message types
-	MessageInitiationType  = 1
-	MessageResponseType    = 2
-	MessageCookieReplyType = 3
-	MessageTransportType   = 4
+	messageInitiationType  = 1
+	messageResponseType    = 2
+	messageCookieReplyType = 3
+	messageTransportType   = 4
 
 	// Message sizes
-	MessageInitiationSize      = 148
-	MessageResponseSize        = 92
-	MessageCookieReplySize     = 64
-	MessageTransportHeaderSize = 16
-	MessageTransportSize       = MessageTransportHeaderSize + chacha20poly1305.Overhead
-	MessageKeepaliveSize       = MessageTransportSize
+	messageInitiationSize      = 148
+	messageResponseSize        = 92
+	messageCookieReplySize     = 64
+	messageTransportHeaderSize = 16
+	messageTransportSize       = messageTransportHeaderSize + chacha20poly1305.Overhead
+	messageKeepaliveSize       = messageTransportSize
 
 	// Transport message offsets
-	MessageTransportOffsetReceiver = 4
-	MessageTransportOffsetCounter  = 8
-	MessageTransportOffsetContent  = 16
+	messageTransportOffsetReceiver = 4
+	messageTransportOffsetCounter  = 8
+	messageTransportOffsetContent  = 16
 
 	// Handshake timing
-	HandshakeInitiationRate = 20 * time.Millisecond
-	RekeyAttemptTime        = 90 * time.Second
-	RekeyTimeout            = 5 * time.Second
-	KeepaliveTimeout        = 10 * time.Second
-	CookieRefreshTime       = 120 * time.Second
-	RejectAfterTime         = 180 * time.Second
+	handshakeInitiationRate = 20 * time.Millisecond
+	rekeyAttemptTime        = 90 * time.Second
+	rekeyTimeout            = 5 * time.Second
+	keepaliveTimeout        = 10 * time.Second
+
+	// CookieRefreshTime is the maximum lifetime of a cookie secret.
+	CookieRefreshTime = 120 * time.Second
+
+	// RejectAfterTime is how long sessions and pending handshakes are kept
+	// before being cleaned up by Maintenance.
+	RejectAfterTime = 180 * time.Second
 
 	// DoS mitigation
-	DefaultLoadThreshold = 100
+	defaultLoadThreshold = 100
 
 	// Key sizes
 	NoisePublicKeySize    = 32
 	NoisePrivateKeySize   = 32
 	NoisePresharedKeySize = 32
 
-	// Replay protection window
+	// WindowSize is the size of the replay protection sliding window.
 	WindowSize = 8192
 )
 
 // NoisePublicKey is a Curve25519 public key.
 type NoisePublicKey [32]byte
 
+// String returns the base64-encoded public key (WireGuard standard encoding).
+func (pk NoisePublicKey) String() string {
+	return base64.StdEncoding.EncodeToString(pk[:])
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (pk NoisePublicKey) MarshalText() ([]byte, error) {
+	return []byte(base64.StdEncoding.EncodeToString(pk[:])), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (pk *NoisePublicKey) UnmarshalText(text []byte) error {
+	b, err := base64.StdEncoding.DecodeString(string(text))
+	if err != nil {
+		return fmt.Errorf("invalid base64: %w", err)
+	}
+	if len(b) != NoisePublicKeySize {
+		return fmt.Errorf("invalid key length: got %d, want %d", len(b), NoisePublicKeySize)
+	}
+	copy(pk[:], b)
+	return nil
+}
+
 // NoisePrivateKey is a Curve25519 private key.
 type NoisePrivateKey [32]byte
+
+// String returns the base64-encoded private key.
+func (sk NoisePrivateKey) String() string {
+	return base64.StdEncoding.EncodeToString(sk[:])
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (sk NoisePrivateKey) MarshalText() ([]byte, error) {
+	return []byte(base64.StdEncoding.EncodeToString(sk[:])), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (sk *NoisePrivateKey) UnmarshalText(text []byte) error {
+	b, err := base64.StdEncoding.DecodeString(string(text))
+	if err != nil {
+		return fmt.Errorf("invalid base64: %w", err)
+	}
+	if len(b) != NoisePrivateKeySize {
+		return fmt.Errorf("invalid key length: got %d, want %d", len(b), NoisePrivateKeySize)
+	}
+	copy(sk[:], b)
+	return nil
+}
 
 // NoisePresharedKey is a WireGuard preshared key.
 type NoisePresharedKey [32]byte
 
-// Message structs for WireGuard protocol
+// MarshalText implements encoding.TextMarshaler.
+func (psk NoisePresharedKey) MarshalText() ([]byte, error) {
+	return []byte(base64.StdEncoding.EncodeToString(psk[:])), nil
+}
 
-// MessageInitiation represents a handshake initiation message.
-type MessageInitiation struct {
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (psk *NoisePresharedKey) UnmarshalText(text []byte) error {
+	b, err := base64.StdEncoding.DecodeString(string(text))
+	if err != nil {
+		return fmt.Errorf("invalid base64: %w", err)
+	}
+	if len(b) != NoisePresharedKeySize {
+		return fmt.Errorf("invalid key length: got %d, want %d", len(b), NoisePresharedKeySize)
+	}
+	copy(psk[:], b)
+	return nil
+}
+
+// Wire protocol message structs (internal)
+
+type messageInitiation struct {
 	Type      uint32
 	Sender    uint32
 	Ephemeral [NoisePublicKeySize]byte
@@ -89,8 +159,7 @@ type MessageInitiation struct {
 	MAC2      [blake2s.Size128]byte
 }
 
-// MessageResponse represents a handshake response message.
-type MessageResponse struct {
+type messageResponse struct {
 	Type      uint32
 	Sender    uint32
 	Receiver  uint32
@@ -100,16 +169,14 @@ type MessageResponse struct {
 	MAC2      [blake2s.Size128]byte
 }
 
-// MessageTransport represents a data transport message.
-type MessageTransport struct {
+type messageTransport struct {
 	Type     uint32
 	Receiver uint32
 	Counter  uint64
 	Content  []byte
 }
 
-// MessageCookieReply represents a cookie reply message.
-type MessageCookieReply struct {
+type messageCookieReply struct {
 	Type     uint32
 	Receiver uint32
 	Nonce    [chacha20poly1305.NonceSizeX]byte

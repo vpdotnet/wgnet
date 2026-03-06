@@ -273,22 +273,22 @@ func TestGenerateKeepalive(t *testing.T) {
 	}
 
 	// Generate keepalive from client.
-	keepalive, err := client.GenerateKeepalive(server.PublicKey())
+	keepalivePkt, err := client.GenerateKeepalive(server.PublicKey())
 	if err != nil {
 		t.Fatalf("GenerateKeepalive: %v", err)
 	}
 
 	// Verify it's a valid transport packet.
-	if len(keepalive) < MessageTransportHeaderSize {
-		t.Fatalf("keepalive too short: %d", len(keepalive))
+	if len(keepalivePkt) < messageTransportHeaderSize {
+		t.Fatalf("keepalive too short: %d", len(keepalivePkt))
 	}
-	msgType := binary_le_uint32(keepalive[0:4])
-	if msgType != MessageTransportType {
-		t.Fatalf("expected transport type %d, got %d", MessageTransportType, msgType)
+	msgType := binary_le_uint32(keepalivePkt[0:4])
+	if msgType != messageTransportType {
+		t.Fatalf("expected transport type %d, got %d", messageTransportType, msgType)
 	}
 
 	// Server should be able to process it as a keepalive.
-	result, err := server.ProcessPacket(keepalive, remoteAddr)
+	result, err := server.ProcessPacket(keepalivePkt, remoteAddr)
 	if err != nil {
 		t.Fatalf("server process keepalive: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestMaintenanceCleanup(t *testing.T) {
 	// --- Test cleanupHandshakes ---
 	// Inject a stale handshake.
 	h.handshakesMutex.Lock()
-	h.handshakes[999] = &Handshake{
+	h.handshakes[999] = &handshake{
 		localIndex: 999,
 		created:    time.Now().Add(-(RejectAfterTime + time.Minute)),
 	}
@@ -334,7 +334,7 @@ func TestMaintenanceCleanup(t *testing.T) {
 	copy(peerKey[:], []byte("stale-session-peer-key-for-test!"))
 
 	h.sessionsMutex.Lock()
-	h.sessions[peerKey] = &Session{
+	h.sessions[peerKey] = &session{
 		peerKey:      peerKey,
 		lastReceived: staleTime,
 		lastSent:     staleTime,
@@ -400,8 +400,8 @@ func TestCookieReplyFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client process cookie reply: %v", err)
 	}
-	if cookieResult != nil {
-		t.Fatalf("expected nil result for cookie reply, got %+v", cookieResult)
+	if cookieResult.Type != PacketCookieReceived {
+		t.Fatalf("expected PacketCookieReceived, got %d", cookieResult.Type)
 	}
 
 	// Clean up the old handshake so the client can start fresh.
@@ -472,5 +472,83 @@ func TestProcessPacketUnknownType(t *testing.T) {
 	_, err = h.ProcessPacket([]byte{1, 2}, remoteAddr)
 	if err == nil {
 		t.Fatal("expected error for short packet")
+	}
+}
+
+func TestGetPeerInfo(t *testing.T) {
+	h, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	defer h.Close()
+
+	// Unknown peer returns false.
+	var unknownKey NoisePublicKey
+	if _, ok := h.GetPeerInfo(unknownKey); ok {
+		t.Fatal("expected false for unknown peer")
+	}
+
+	peer, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler peer: %v", err)
+	}
+	defer peer.Close()
+
+	h.AddPeer(peer.PublicKey())
+
+	info, ok := h.GetPeerInfo(peer.PublicKey())
+	if !ok {
+		t.Fatal("expected true for known peer")
+	}
+	if info.PublicKey != peer.PublicKey() {
+		t.Fatal("public key mismatch")
+	}
+	if info.HasPSK {
+		t.Fatal("expected no PSK")
+	}
+	if info.CreatedAt.IsZero() {
+		t.Fatal("expected non-zero CreatedAt")
+	}
+}
+
+func TestKeyEncoding(t *testing.T) {
+	priv, err := GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("GeneratePrivateKey: %v", err)
+	}
+	pub := priv.PublicKey()
+
+	// String round-trip for public key.
+	s := pub.String()
+	var pub2 NoisePublicKey
+	if err := pub2.UnmarshalText([]byte(s)); err != nil {
+		t.Fatalf("UnmarshalText: %v", err)
+	}
+	if pub != pub2 {
+		t.Fatal("public key round-trip failed")
+	}
+
+	// MarshalText round-trip for private key.
+	text, err := priv.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText: %v", err)
+	}
+	var priv2 NoisePrivateKey
+	if err := priv2.UnmarshalText(text); err != nil {
+		t.Fatalf("UnmarshalText: %v", err)
+	}
+	if priv != priv2 {
+		t.Fatal("private key round-trip failed")
+	}
+
+	// Invalid base64.
+	var pk NoisePublicKey
+	if err := pk.UnmarshalText([]byte("not-base64!!!")); err == nil {
+		t.Fatal("expected error for invalid base64")
+	}
+
+	// Wrong length.
+	if err := pk.UnmarshalText([]byte("AAAA")); err == nil {
+		t.Fatal("expected error for wrong length")
 	}
 }

@@ -6,9 +6,9 @@ package wgnet
 
 import "sync"
 
-// SlidingWindow implements replay protection using a bitmap-based sliding window.
+// slidingWindow implements replay protection using a bitmap-based sliding window.
 // It tracks which packet counters have been seen to detect duplicates.
-type SlidingWindow struct {
+type slidingWindow struct {
 	bitmap      [WindowSize / 64]uint64
 	position    uint64 // position at start of bitmap (multiple of 64)
 	offset      uint64 // offset within bitmap array (ring buffer offset)
@@ -19,7 +19,7 @@ type SlidingWindow struct {
 // CheckReplay checks if a packet counter has been seen before.
 // Returns true if the counter is a replay (already seen or too old).
 // Automatically marks the counter as seen if it is new.
-func (sw *SlidingWindow) CheckReplay(counter uint64) bool {
+func (sw *slidingWindow) CheckReplay(counter uint64) bool {
 	sw.mutex.Lock()
 	defer sw.mutex.Unlock()
 
@@ -87,7 +87,7 @@ func (sw *SlidingWindow) CheckReplay(counter uint64) bool {
 }
 
 // Reset resets the sliding window, clearing all state.
-func (sw *SlidingWindow) Reset() {
+func (sw *slidingWindow) Reset() {
 	sw.mutex.Lock()
 	defer sw.mutex.Unlock()
 	sw.initialized = false

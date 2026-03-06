@@ -93,8 +93,8 @@ func TestServerSingleHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
-	if n != MessageResponseSize {
-		t.Fatalf("response size: got %d, want %d", n, MessageResponseSize)
+	if n != messageResponseSize {
+		t.Fatalf("response size: got %d, want %d", n, messageResponseSize)
 	}
 
 	// Verify OnPeerConnected fired.
@@ -119,10 +119,10 @@ func TestServerSingleHandler(t *testing.T) {
 	nonce := make([]byte, 12)
 	ciphertext := kp.receive.Seal(nil, nonce, plaintext, nil)
 
-	pkt := make([]byte, MessageTransportHeaderSize+len(ciphertext))
-	binary_le_put_uint32(pkt[0:4], MessageTransportType)
+	pkt := make([]byte, messageTransportHeaderSize+len(ciphertext))
+	binary_le_put_uint32(pkt[0:4], messageTransportType)
 	binary_le_put_uint32(pkt[4:8], kp.localIndex)
-	copy(pkt[MessageTransportHeaderSize:], ciphertext)
+	copy(pkt[messageTransportHeaderSize:], ciphertext)
 
 	if _, err := client.WriteTo(pkt, conn.LocalAddr()); err != nil {
 		t.Fatalf("send transport: %v", err)
@@ -204,8 +204,8 @@ func TestServerMultiHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read response: %v", err)
 		}
-		if n != MessageResponseSize {
-			t.Fatalf("response size: got %d, want %d", n, MessageResponseSize)
+		if n != messageResponseSize {
+			t.Fatalf("response size: got %d, want %d", n, messageResponseSize)
 		}
 
 		kp := getFirstKeypair(t, targetHandler)
@@ -213,10 +213,10 @@ func TestServerMultiHandler(t *testing.T) {
 		nonce := make([]byte, 12)
 		ciphertext := kp.receive.Seal(nil, nonce, []byte(payload), nil)
 
-		pkt := make([]byte, MessageTransportHeaderSize+len(ciphertext))
-		binary_le_put_uint32(pkt[0:4], MessageTransportType)
+		pkt := make([]byte, messageTransportHeaderSize+len(ciphertext))
+		binary_le_put_uint32(pkt[0:4], messageTransportType)
 		binary_le_put_uint32(pkt[4:8], kp.localIndex)
-		copy(pkt[MessageTransportHeaderSize:], ciphertext)
+		copy(pkt[messageTransportHeaderSize:], ciphertext)
 
 		if _, err := c.WriteTo(pkt, conn.LocalAddr()); err != nil {
 			t.Fatalf("send transport: %v", err)
@@ -296,8 +296,8 @@ func TestServerSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
-	if n != MessageResponseSize {
-		t.Fatalf("response size: got %d, want %d", n, MessageResponseSize)
+	if n != messageResponseSize {
+		t.Fatalf("response size: got %d, want %d", n, messageResponseSize)
 	}
 
 	// Wait for the server to fully process the handshake.
@@ -315,13 +315,13 @@ func TestServerSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read transport: %v", err)
 	}
-	if n < MessageTransportHeaderSize {
+	if n < messageTransportHeaderSize {
 		t.Fatalf("packet too short: %d", n)
 	}
 
 	msgType := binary_le_uint32(buf[0:4])
-	if msgType != MessageTransportType {
-		t.Fatalf("message type: got %d, want %d", msgType, MessageTransportType)
+	if msgType != messageTransportType {
+		t.Fatalf("message type: got %d, want %d", msgType, messageTransportType)
 	}
 
 	// Decrypt using the server's send cipher to verify the payload.
@@ -329,7 +329,7 @@ func TestServerSend(t *testing.T) {
 	counter := binary_le_uint64(buf[8:16])
 	var nonce [12]byte
 	binary_le_put_uint64(nonce[4:], counter)
-	decrypted, err := kp.send.Open(nil, nonce[:], buf[MessageTransportHeaderSize:n], nil)
+	decrypted, err := kp.send.Open(nil, nonce[:], buf[messageTransportHeaderSize:n], nil)
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
@@ -409,8 +409,8 @@ func TestInitiateHandshake(t *testing.T) {
 	}
 
 	// Verify packet size.
-	if len(pkt) != MessageInitiationSize {
-		t.Fatalf("packet size: got %d, want %d", len(pkt), MessageInitiationSize)
+	if len(pkt) != messageInitiationSize {
+		t.Fatalf("packet size: got %d, want %d", len(pkt), messageInitiationSize)
 	}
 
 	// Verify handshake state is stored.
@@ -816,8 +816,8 @@ func TestServerSendMultiHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
-	if n != MessageResponseSize {
-		t.Fatalf("response size: got %d, want %d", n, MessageResponseSize)
+	if n != messageResponseSize {
+		t.Fatalf("response size: got %d, want %d", n, messageResponseSize)
 	}
 
 	select {
@@ -841,13 +841,13 @@ func TestServerSendMultiHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read transport: %v", err)
 	}
-	if n < MessageTransportHeaderSize {
+	if n < messageTransportHeaderSize {
 		t.Fatalf("packet too short: %d", n)
 	}
 
 	msgType := binary_le_uint32(buf[0:4])
-	if msgType != MessageTransportType {
-		t.Fatalf("message type: got %d, want %d", msgType, MessageTransportType)
+	if msgType != messageTransportType {
+		t.Fatalf("message type: got %d, want %d", msgType, messageTransportType)
 	}
 
 	// Send for unknown peer should fail.
@@ -860,7 +860,7 @@ func TestServerSendMultiHandler(t *testing.T) {
 
 // getFirstKeypair returns the first keypair from a handler's internal map.
 // Used by tests to craft synthetic transport packets.
-func getFirstKeypair(t *testing.T, h *Handler) *Keypair {
+func getFirstKeypair(t *testing.T, h *Handler) *keypair {
 	t.Helper()
 	h.keypairsMutex.RLock()
 	defer h.keypairsMutex.RUnlock()

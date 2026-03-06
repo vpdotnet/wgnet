@@ -211,8 +211,8 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("packet too short: %d bytes", n)
 	}
 	msgType := binary_le_uint32(buf[0:4])
-	if msgType != MessageInitiationType {
-		t.Fatalf("expected message type %d (initiation), got %d", MessageInitiationType, msgType)
+	if msgType != messageInitiationType {
+		t.Fatalf("expected message type %d (initiation), got %d", messageInitiationType, msgType)
 	}
 
 	// === 6. Process handshake through our handler ===
