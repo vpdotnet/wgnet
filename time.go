@@ -6,14 +6,12 @@ package wgnet
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 var (
 	nowVar   time.Time = time.Now()
 	nowVarLk sync.RWMutex
-	nowUint  uint32
 )
 
 func init() {
@@ -24,17 +22,10 @@ func nowReader() {
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
 
-	x := 0
 	for n := range t.C {
 		nowVarLk.Lock()
 		nowVar = n
 		nowVarLk.Unlock()
-
-		x++
-		if x >= 10 {
-			atomic.AddUint32(&nowUint, 1)
-			x = 0
-		}
 	}
 }
 
@@ -43,9 +34,4 @@ func now() time.Time {
 	nowVarLk.RLock()
 	defer nowVarLk.RUnlock()
 	return nowVar
-}
-
-// now32 returns an incrementing counter (~1 per second) without locks.
-func now32() uint32 {
-	return atomic.LoadUint32(&nowUint)
 }

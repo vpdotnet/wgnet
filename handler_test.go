@@ -511,6 +511,171 @@ func TestGetPeerInfo(t *testing.T) {
 	}
 }
 
+func TestTimestampReplayProtection(t *testing.T) {
+	client, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler client: %v", err)
+	}
+	defer client.Close()
+
+	server, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler server: %v", err)
+	}
+	defer server.Close()
+
+	client.AddPeer(server.PublicKey())
+	server.AddPeer(client.PublicKey())
+
+	remoteAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
+
+	// First handshake should succeed.
+	initPkt, err := client.InitiateHandshake(server.PublicKey())
+	if err != nil {
+		t.Fatalf("InitiateHandshake: %v", err)
+	}
+	result, err := server.ProcessPacket(initPkt, remoteAddr)
+	if err != nil {
+		t.Fatalf("first handshake: %v", err)
+	}
+	if result.Type != PacketHandshakeResponse {
+		t.Fatalf("expected handshake response, got %d", result.Type)
+	}
+
+	// Replaying the exact same initiation packet should be rejected
+	// because the timestamp is not strictly greater.
+	_, err = server.ProcessPacket(initPkt, remoteAddr)
+	if err == nil {
+		t.Fatal("replayed handshake initiation should be rejected")
+	}
+	if !testing.Verbose() {
+		t.Logf("replay correctly rejected: %v", err)
+	}
+
+	// A fresh handshake (new timestamp) should still succeed.
+	// Clear client's pending handshakes first.
+	client.handshakesMutex.Lock()
+	for k := range client.handshakes {
+		delete(client.handshakes, k)
+	}
+	client.handshakesMutex.Unlock()
+
+	initPkt2, err := client.InitiateHandshake(server.PublicKey())
+	if err != nil {
+		t.Fatalf("second InitiateHandshake: %v", err)
+	}
+
+	// Need to wait for cached time to advance to get a new timestamp.
+	time.Sleep(150 * time.Millisecond)
+
+	// Clear and retry with a fresh timestamp.
+	client.handshakesMutex.Lock()
+	for k := range client.handshakes {
+		delete(client.handshakes, k)
+	}
+	client.handshakesMutex.Unlock()
+
+	initPkt2, err = client.InitiateHandshake(server.PublicKey())
+	if err != nil {
+		t.Fatalf("third InitiateHandshake: %v", err)
+	}
+	result2, err := server.ProcessPacket(initPkt2, remoteAddr)
+	if err != nil {
+		t.Fatalf("fresh handshake after replay rejection: %v", err)
+	}
+	if result2.Type != PacketHandshakeResponse {
+		t.Fatalf("expected handshake response, got %d", result2.Type)
+	}
+}
+
+func TestKeypairExpiration(t *testing.T) {
+	client, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler client: %v", err)
+	}
+	defer client.Close()
+
+	server, err := NewHandler(Config{})
+	if err != nil {
+		t.Fatalf("NewHandler server: %v", err)
+	}
+	defer server.Close()
+
+	client.AddPeer(server.PublicKey())
+	server.AddPeer(client.PublicKey())
+
+	// Perform handshake.
+	initPkt, err := client.InitiateHandshake(server.PublicKey())
+	if err != nil {
+		t.Fatalf("InitiateHandshake: %v", err)
+	}
+
+	remoteAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
+	serverResult, err := server.ProcessPacket(initPkt, remoteAddr)
+	if err != nil {
+		t.Fatalf("server ProcessPacket: %v", err)
+	}
+
+	_, err = client.ProcessPacket(serverResult.Response, remoteAddr)
+	if err != nil {
+		t.Fatalf("client ProcessPacket: %v", err)
+	}
+
+	// Encryption should work with a fresh keypair.
+	_, err = client.Encrypt([]byte("test"), server.PublicKey())
+	if err != nil {
+		t.Fatalf("Encrypt with fresh keypair: %v", err)
+	}
+
+	// Expire all keypairs by backdating their creation time.
+	client.keypairsMutex.RLock()
+	for _, kp := range client.keypairs {
+		kp.created = time.Now().Add(-(RejectAfterTime + time.Minute))
+	}
+	client.keypairsMutex.RUnlock()
+
+	// Encryption should now fail.
+	_, err = client.Encrypt([]byte("test"), server.PublicKey())
+	if err == nil {
+		t.Fatal("Encrypt with expired keypair should fail")
+	}
+
+	// Also expire server-side keypairs and test decryption.
+	server.keypairsMutex.RLock()
+	for _, kp := range server.keypairs {
+		kp.created = time.Now().Add(-(RejectAfterTime + time.Minute))
+	}
+	server.keypairsMutex.RUnlock()
+
+	// Build a transport packet that references the expired keypair.
+	kp := getFirstKeypair(t, server)
+	nonce := make([]byte, 12)
+	ciphertext := kp.receive.Seal(nil, nonce, []byte("test"), nil)
+	pkt := make([]byte, messageTransportHeaderSize+len(ciphertext))
+	binary_le_put_uint32(pkt[0:4], messageTransportType)
+	binary_le_put_uint32(pkt[4:8], kp.localIndex)
+	copy(pkt[messageTransportHeaderSize:], ciphertext)
+
+	_, err = server.ProcessPacket(pkt, remoteAddr)
+	if err == nil {
+		t.Fatal("decrypt with expired keypair should fail")
+	}
+}
+
+func TestPresharedKeyString(t *testing.T) {
+	var psk NoisePresharedKey
+	copy(psk[:], []byte("01234567890123456789012345678901"))
+
+	s := psk.String()
+	var psk2 NoisePresharedKey
+	if err := psk2.UnmarshalText([]byte(s)); err != nil {
+		t.Fatalf("PSK round-trip failed: %v", err)
+	}
+	if psk != psk2 {
+		t.Fatal("PSK round-trip mismatch")
+	}
+}
+
 func TestKeyEncoding(t *testing.T) {
 	priv, err := GeneratePrivateKey()
 	if err != nil {

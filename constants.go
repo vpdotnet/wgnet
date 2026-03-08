@@ -41,19 +41,6 @@ const (
 	messageResponseSize        = 92
 	messageCookieReplySize     = 64
 	messageTransportHeaderSize = 16
-	messageTransportSize       = messageTransportHeaderSize + chacha20poly1305.Overhead
-	messageKeepaliveSize       = messageTransportSize
-
-	// Transport message offsets
-	messageTransportOffsetReceiver = 4
-	messageTransportOffsetCounter  = 8
-	messageTransportOffsetContent  = 16
-
-	// Handshake timing
-	handshakeInitiationRate = 20 * time.Millisecond
-	rekeyAttemptTime        = 90 * time.Second
-	rekeyTimeout            = 5 * time.Second
-	keepaliveTimeout        = 10 * time.Second
 
 	// CookieRefreshTime is the maximum lifetime of a cookie secret.
 	CookieRefreshTime = 120 * time.Second
@@ -129,6 +116,11 @@ func (sk *NoisePrivateKey) UnmarshalText(text []byte) error {
 // NoisePresharedKey is a WireGuard preshared key.
 type NoisePresharedKey [32]byte
 
+// String returns the base64-encoded preshared key.
+func (psk NoisePresharedKey) String() string {
+	return base64.StdEncoding.EncodeToString(psk[:])
+}
+
 // MarshalText implements encoding.TextMarshaler.
 func (psk NoisePresharedKey) MarshalText() ([]byte, error) {
 	return []byte(base64.StdEncoding.EncodeToString(psk[:])), nil
@@ -169,13 +161,6 @@ type messageResponse struct {
 	MAC2      [blake2s.Size128]byte
 }
 
-type messageTransport struct {
-	Type     uint32
-	Receiver uint32
-	Counter  uint64
-	Content  []byte
-}
-
 type messageCookieReply struct {
 	Type     uint32
 	Receiver uint32
@@ -189,7 +174,5 @@ type handshakeState int
 const (
 	handshakeZeroed = handshakeState(iota)
 	handshakeInitiationCreated
-	handshakeInitiationConsumed
 	handshakeResponseCreated
-	handshakeResponseConsumed
 )

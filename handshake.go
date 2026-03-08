@@ -110,7 +110,7 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 
 	// === Decrypt timestamp ===
 	aeadCipher, _ = chacha20poly1305.New(key[:])
-	_, err = aeadCipher.Open(nil, zeroNonce[:], msg.Timestamp[:], hs.hash[:])
+	timestamp, err := aeadCipher.Open(nil, zeroNonce[:], msg.Timestamp[:], hs.hash[:])
 	if err != nil {
 		return nil, fmt.Errorf("decrypt timestamp: %w", err)
 	}
@@ -125,9 +125,15 @@ func (h *Handler) processHandshakeInitiation(data []byte, remoteAddr *net.UDPAdd
 		return nil, fmt.Errorf("unauthorized peer")
 	}
 
-	// Update last handshake time
+	// Check timestamp replay and update last handshake time
 	h.peersMutex.Lock()
 	if entry, exists := h.peers[hs.remoteStatic]; exists {
+		if entry.hasTimestamp && bytes.Compare(timestamp, entry.lastTimestamp[:]) <= 0 {
+			h.peersMutex.Unlock()
+			return nil, fmt.Errorf("replayed handshake timestamp")
+		}
+		copy(entry.lastTimestamp[:], timestamp)
+		entry.hasTimestamp = true
 		entry.LastHandshake = now()
 	}
 	h.peersMutex.Unlock()

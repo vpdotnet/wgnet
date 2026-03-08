@@ -84,7 +84,9 @@ type peerEntry struct {
 	CreatedAt     time.Time
 	ExpiresAt     time.Time
 	LastHandshake time.Time
-	cookieGen     cookieGenerator
+	lastTimestamp [tai64nTimestampSize]byte
+	hasTimestamp  bool
+	cookieGen    cookieGenerator
 }
 
 // Handler implements the WireGuard protocol, supporting both initiator and
@@ -124,8 +126,6 @@ type Handler struct {
 	peers      map[NoisePublicKey]*peerEntry
 	peersMutex sync.RWMutex
 
-	// Buffer pools
-	packetPool *sync.Pool
 }
 
 // NewHandler creates a new WireGuard protocol handler.
@@ -150,12 +150,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 		keypairs:      make(map[uint32]*keypair),
 		sessions:      make(map[NoisePublicKey]*session),
 		peerCounters:  make(map[NoisePublicKey]uint64),
-		peers:         make(map[NoisePublicKey]*peerEntry),
-		packetPool: &sync.Pool{
-			New: func() interface{} {
-				return make([]byte, 2048)
-			},
-		},
+		peers:        make(map[NoisePublicKey]*peerEntry),
 	}
 
 	h.cookieChecker.Init(pubKey)

@@ -35,6 +35,11 @@ func (h *Handler) processDataPacket(data []byte) (*PacketResult, error) {
 		return nil, fmt.Errorf("no keypair for receiver index: %d", receiverIdx)
 	}
 
+	// Reject expired keypairs (forward secrecy)
+	if now().Sub(kp.created) > RejectAfterTime {
+		return nil, fmt.Errorf("keypair expired")
+	}
+
 	// Create nonce from counter
 	var nonce [chacha20poly1305.NonceSize]byte
 	binary_le_put_uint64(nonce[4:], counter)
@@ -105,6 +110,10 @@ func (h *Handler) encryptDataPacket(data []byte, peerKey NoisePublicKey) ([]byte
 	if kp == nil {
 		sess.mutex.Unlock()
 		return nil, fmt.Errorf("no current keypair for peer")
+	}
+	if now().Sub(kp.created) > RejectAfterTime {
+		sess.mutex.Unlock()
+		return nil, fmt.Errorf("keypair expired: initiate new handshake")
 	}
 	remoteIndex := kp.remoteIndex
 	sess.lastSent = now()
