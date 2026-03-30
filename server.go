@@ -51,6 +51,7 @@ type Server struct {
 	connMu sync.RWMutex
 	conn   net.PacketConn
 	done   chan struct{}
+	ready  chan struct{}
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
@@ -91,6 +92,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		maintenanceInterval: interval,
 		readBufferSize:      bufSize,
 		done:                make(chan struct{}),
+		ready:               make(chan struct{}),
 		peerAddrs:           make(map[NoisePublicKey]*net.UDPAddr),
 	}
 	if cfg.MultiHandler != nil {
@@ -105,6 +107,7 @@ func (s *Server) Serve(conn net.PacketConn) error {
 	s.connMu.Lock()
 	s.conn = conn
 	s.connMu.Unlock()
+	close(s.ready)
 
 	s.wg.Add(2)
 	go s.readLoop()
@@ -296,12 +299,10 @@ func (s *Server) ConnectWith(peerKey NoisePublicKey, addr *net.UDPAddr, handler 
 }
 
 func (s *Server) connectWith(peerKey NoisePublicKey, addr *net.UDPAddr, handler *Handler) error {
+	<-s.ready
 	s.connMu.RLock()
 	conn := s.conn
 	s.connMu.RUnlock()
-	if conn == nil {
-		return errors.New("wgnet: server not serving; call Serve first")
-	}
 
 	initPkt, err := handler.InitiateHandshake(peerKey)
 	if err != nil {
